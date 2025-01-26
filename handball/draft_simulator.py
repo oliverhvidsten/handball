@@ -28,7 +28,7 @@ def player_generation(names_list, age_list, position_list):
 
 
 
-def classify_players(new_names_list):
+def classify_players(new_names):
     """
     Feed new names into the pre-trained ML algorithm to classify if they will be good, bad, etc
 
