@@ -40,6 +40,7 @@ def classify_players(new_names):
 
     raise NotImplementedError
 
+##At least partially accounted for in Player class -- we need to call and discuss where some things will happen
 def randomize_attributes(player_class, player_age, player_position):
     """
     Based of off how good they "should" be based off of their name and some randomization that will make 
