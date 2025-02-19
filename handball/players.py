@@ -23,7 +23,7 @@ class Player():
         #Biographical
         self.name = name
         self.age = random.normalvariate(27, 3)
-        self.years_in_league = self.age - random.uniform(18,21)
+        self.years_in_league = max(0, round(self.age - random.uniform(18,21)))
         self.height = random.normalvariate(71, 2)
         self.weight = random.normalvariate(175, 15)
 
@@ -49,24 +49,17 @@ class Player():
             else:
                 self.goalie_skill = 0.1
         elif humor == 1:
-            self.offense = max(0, random.normalvariate(4, 1))
-            self.defense = max(0, random.normalvariate(4, 1))
+            self.offense = max(0, random.normalvariate(5, 1))
+            self.defense = max(0, random.normalvariate(5, 1))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(4, 1))
+                self.goalie_skill = max(0, random.normalvariate(5, 1))
             else:
                 self.goalie_skill = 0.1
         elif humor == 2:
-            self.offense = max(0, random.normalvariate(6, 1.25))
-            self.defense = max(0, random.normalvariate(6, 1.25))
+            self.offense = max(0, random.normalvariate(8, 1.25))
+            self.defense = max(0, random.normalvariate(8, 1.25))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(6, 1.25))
-            else:
-                self.goalie_skill = 0.1
-        elif humor == 3: 
-            self.offense = max(0, random.normalvariate(9, 1.5))
-            self.defense = max(0, random.normalvariate(9, 1.5))
-            if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(9, 1.5))
+                self.goalie_skill = max(0, random.normalvariate(8, 1.25))
             else:
                 self.goalie_skill = 0.1
         else:
@@ -88,6 +81,7 @@ class Player():
         self.has_been_injured = False
         self.year_of_injury = None 
         self.injury_risk = max(0.0005, random.normalvariate(0.001, 0.001))
+        self.injury_log = {}
 
         #Contract: NEEDS ELABORATION
         self.contract_term = 0
@@ -97,8 +91,20 @@ class Player():
         self.rookie_contract = False
         self.restricted_free_agent = False
 
+        #Trajectory
+
+
 
         #Misc
         self.awards_won = []
 
-        
+    def advance_year(self):
+        self.age += 1
+        self.years_in_league += 1
+    
+    def injure(self):
+        self.is_injured = True
+        self.has_been_injured = True
+        self.year_of_injury = None ###############
+        self.injury_log[self.year_of_injury] = 'Injury Type'
+        ###Injury type and duration###############
