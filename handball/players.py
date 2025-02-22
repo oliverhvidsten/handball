@@ -42,31 +42,31 @@ class Player():
 
         #Stat Generation
         if humor == 0:
-            self.offense = max(0, random.normalvariate(2, 1))
-            self.defense = max(0, random.normalvariate(2, 1))
+            self.offense = max(0, random.normalvariate(2, 1.5))
+            self.defense = max(0, random.normalvariate(2, 1.5))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(2, 1))
+                self.goalie_skill = max(0, random.normalvariate(2, 1.5))
             else:
                 self.goalie_skill = 0.1
         elif humor == 1:
-            self.offense = max(0, random.normalvariate(5, 1))
-            self.defense = max(0, random.normalvariate(5, 1))
+            self.offense = max(0, random.normalvariate(4, 1.75))
+            self.defense = max(0, random.normalvariate(4, 1.75))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(5, 1))
+                self.goalie_skill = max(0, random.normalvariate(4, 1.75))
             else:
                 self.goalie_skill = 0.1
         elif humor == 2:
-            self.offense = max(0, random.normalvariate(8, 1.25))
-            self.defense = max(0, random.normalvariate(8, 1.25))
+            self.offense = max(0, random.normalvariate(6, 1.75))
+            self.defense = max(0, random.normalvariate(6, 1.75))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(8, 1.25))
+                self.goalie_skill = max(0, random.normalvariate(6, 1.75))
             else:
                 self.goalie_skill = 0.1
         else:
-            self.offense = max(0, random.normalvariate(12, 2))
-            self.defense = max(0, random.normalvariate(12, 2))
+            self.offense = max(0, random.normalvariate(8, 1.5))
+            self.defense = max(0, random.normalvariate(8, 1.5))
             if self.position == 'Goalie':
-                self.goalie_skill = max(0, random.normalvariate(12, 2))
+                self.goalie_skill = max(0, random.normalvariate(8, 1.5))
             else:
                 self.goalie_skill = 0.1
 

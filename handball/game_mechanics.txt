@@ -1,0 +1,32 @@
+GAME MECHANICS RULES
+Variables:
+    Court length- 40 meters
+    Goal area- 6 meters on each side
+
+0. For each player, draw an offensive contribuition and a defensive contribution, sum to make total team offense
+and defense for the game (weighted average for amount of time played). Before the game starts, generate a very large
+list of numpy randoms, to be referenced throughout the game. Regenerate if needed.
+
+1. Opening posession determined 50-50, ball starts at the 20
+
+2. When a team has the ball: offense / (offense + defense) = completed pass %, an incomplete pass will lead to either a turnover 
+or a loss of meters (could be 0)
+
+3. If a pass is completed, distance travelled is normally distributed, pull distance from ~N(4, 1.5) for now, but should scale 
+depending on how much better the offense is than defense. Time spent will correlate with distance travelled.
+
+4. When the ball is within shooting range, passes become shorter. 
+
+5. At any point, a player may feasibly take a shot. At the 6 meter, they have a 50% chance of shooting, their probability
+is expressed as a sigmoid function of distance from the 6 meter line, being effectively 100% at the 0 meter (goal)
+
+6. distance, goalie, offense 
+
+6. If a  shot is taken, a shot on goal will occur with probability e^-k*(distance from goal)
+
+7. If a shot is on goal, a goal will occur with probability offense / (offense + m*defense + n*goalie)
+
+8. If a shot does not turn into a goal, 10% chance of offensive rebound
+
+9. At the end of the game, final score will have been tabulated. Points will be given to individual players
+consistent with their offensive contribution to the team.
