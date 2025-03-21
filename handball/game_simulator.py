@@ -45,23 +45,40 @@ def simulate_game(home_team, away_team):
     i = 0
     k = 0.5 ######### TO TUNE
 
-    while True:
-        
-        if np.random.uniform(0,1) < home_ratio: #Is a pass successful?
-            
-            if np.random.uniform(0,1) < odds_of_taking_shot(ball_at): #If pass would be successful, was the pass a shot?
+    while True: ###This has to be amended to run until time runs out
+        while True:
+            if np.random.uniform(0,1) < home_ratio: #Is a pass successful?
                 
-                if np.random.uniform(0,1) < np.e ^ (-k * (40-ball_at)): #If shot was taken, was it on goal?
-                    #if shot was on goal, was a goal scored?
-                    if np.random.uniform(0,1) < home_offense / (home_offense + away_defense + away_goalie): #if shot was on goal, was a goal scored?
-                        home_score +=1 #goal scored
-                        break
+                if np.random.uniform(0,1) < odds_of_taking_shot(ball_at): #If pass would be successful, was the pass a shot?
+                    
+                    if np.random.uniform(0,1) < np.e ^ (-k * (40-ball_at)): #If shot was taken, was it on goal?
+                        #if shot was on goal, was a goal scored?
+                        if np.random.uniform(0,1) < home_offense / (home_offense + away_defense + away_goalie): #if shot was on goal, was a goal scored?
+                            home_score +=1 #goal scored
+                            break
+                        elif np.random.uniform(0,1) < 0.1: pass #offensive recovery
+                        else: break #turnover
                     elif np.random.uniform(0,1) < 0.1: pass #offensive recovery
                     else: break #turnover
-                elif np.random.uniform(0,1) < 0.1: pass #offensive recovery
-                else: break #turnover
-            else: ball_at += np.random.normal(4, 1.5) #normal pass completed and advanced
-        else: break #turnover
+                else: ball_at += min(40,np.random.normal(4, 1.5)) #normal pass completed and advanced
+            else: break #turnover
+
+        while True:
+            if np.random.uniform(0,1) < away_ratio: #Is a pass successful?
+                
+                if np.random.uniform(0,1) < odds_of_taking_shot(ball_at): #If pass would be successful, was the pass a shot?
+                    
+                    if np.random.uniform(0,1) < np.e ^ (-k * (ball_at)): #If shot was taken, was it on goal?
+                        #if shot was on goal, was a goal scored?
+                        if np.random.uniform(0,1) < away_offense / (away_offense + home_defense + home_goalie): #if shot was on goal, was a goal scored?
+                            away_score +=1 #goal scored
+                            break
+                        elif np.random.uniform(0,1) < 0.1: pass #offensive recovery
+                        else: break #turnover
+                    elif np.random.uniform(0,1) < 0.1: pass #offensive recovery
+                    else: break #turnover
+                else: ball_at -= max(0,np.random.normal(4, 1.5)) #normal pass completed and advanced
+            else: break #turnover
 
     raise NotImplementedError
 
