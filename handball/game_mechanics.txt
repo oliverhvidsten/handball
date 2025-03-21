@@ -20,8 +20,6 @@ depending on how much better the offense is than defense. Time spent will correl
 5. At any point, a player may feasibly take a shot. At the 6 meter, they have a 50% chance of shooting, their probability
 is expressed as a sigmoid function of distance from the 6 meter line, being effectively 100% at the 0 meter (goal)
 
-6. distance, goalie, offense 
-
 6. If a  shot is taken, a shot on goal will occur with probability e^-k*(distance from goal)
 
 7. If a shot is on goal, a goal will occur with probability offense / (offense + m*defense + n*goalie)
