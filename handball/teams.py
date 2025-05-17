@@ -29,20 +29,22 @@ class Team():
 
 
     def __init__(self):
-        self.starters = {
-            "Offense": [None],
-            "Midfielders": [None],
-            "Defense": [None],
-            "Goalie": None
-        }
+        #self.starters = {
+        #    "Offense": [None],
+        #    "Midfielders": [None],
+        #    "Defense": [None],
+        #    "Goalie": None
+        #}
 
-        self.bench = {
-            "Offense": [None],
-            "Midfielders": [None],
-            "Defense": [None],
-            "Goalie": None
-        }
-
+        #self.bench = {
+        #    "Offense": [None],
+        #    "Midfielders": [None],
+        #    "Defense": [None],
+        #    "Goalie": None
+        #}
+        self.starters = [None]
+        self.bench = [None]
+        self.goalie = None
         self.reserve = [None]
 
         raise NotImplementedError
