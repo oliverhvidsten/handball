@@ -66,7 +66,7 @@ def simulate_game(home_team, away_team):
         while True:
             if np.random.uniform(0,1) < away_ratio: #Is a pass successful?
                 
-                if np.random.uniform(0,1) < odds_of_taking_shot(ball_at): #If pass would be successful, was the pass a shot?
+                if np.random.uniform(0,1) < 1-odds_of_taking_shot(ball_at): #If pass would be successful, was the pass a shot?
                     
                     if np.random.uniform(0,1) < np.e ^ (-k * (ball_at)): #If shot was taken, was it on goal?
                         #if shot was on goal, was a goal scored?
