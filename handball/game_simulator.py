@@ -9,7 +9,10 @@ Date: 1/20/2025 12:32PM PST
 # Pass length correlates with amount of time off clock
 import numpy as np
 
-def simulate_game(home_team, away_team):
+from utils import ProbabilityStack
+
+def initialize_game(home_team, away_team):
+
     home_score = 0
     away_score = 0
 
@@ -41,6 +44,25 @@ def simulate_game(home_team, away_team):
     ball_at = 20
 
 
+    return (
+        home_score, away_score, 
+        home_offense, home_defense, home_ratio, home_goalie, 
+        away_offense, away_defense, away_ratio, away_goalie,
+        has_posession, ball_at
+    )
+
+
+def offensive_posession():
+    return NotImplementedError
+
+def simulate_game(home_team, away_team):
+    
+    (home_score, away_score, 
+    home_offense, home_defense, home_ratio, home_goalie, 
+    away_offense, away_defense, away_ratio, away_goalie,
+    has_posession, ball_at) = initialize_game(home_team, away_team)
+
+ 
     prob = np.random.rand(1, 1000)
     i = 0
     k = 0.5 ######### TO TUNE
