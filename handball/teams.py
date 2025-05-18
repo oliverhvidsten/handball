@@ -4,6 +4,8 @@ Description: This file contains code for the Team classes
 Author: Oliver Hvidsten (oliverhvidsten@gmail.com)
 Date: 1/20/2025 10:38AM PST
 """
+from utils import dict_to_str
+from sheets_handler import SheetHandler
 
 class Team():
 
@@ -28,34 +30,94 @@ class Team():
     """
 
 
-    def __init__(self):
-        #self.starters = {
-        #    "Offense": [None],
-        #    "Midfielders": [None],
-        #    "Defense": [None],
-        #    "Goalie": None
-        #}
+    def __init__(self, team_name, coaches, starters, bench, reserves):
+        """
+        Team Class constructor
 
-        #self.bench = {
-        #    "Offense": [None],
-        #    "Midfielders": [None],
-        #    "Defense": [None],
-        #    "Goalie": None
-        #}
-        self.starters = [None]
-        self.bench = [None]
-        self.goalie = None
-        self.reserve = [None]
+        Inputs
+            1. team_name (str): team name is just the location (e.g. "Boston" not "Boston Foxes")
+            2. coaches (list): 1x3 list of coaching staff [HC, OC, DC]
+            3. starters (dict): dictionary holding lists for forwards, midfielders, and defense, and one goalie string
+            4. bench (dict): dictionary holding lists for forwards, midfielders, and defense, and one goalie string
+            5. reserve (list): 1x4 list of reserve player names
 
-        raise NotImplementedError
+        --Starters/Bench--
+        {
+            "Forwards": [...],
+            "Midfielders": [...],
+            "Defense": [...],
+            "Goalie": <str>
+         }
+        """
+        self.team_name = team_name 
+        self.coaches = coaches
+        self.starters = starters
+        self.bench = bench
+        self.reserves = reserves
 
+    def __str__(self):
 
-    def from_sheet(self):
-        # Get names for each position
-        # SO1, SO2, SO3, SM1, SM2, SM3, SD1, SD2, SD3, SG1, BO1, BO2, BM1, BM2, BD1, BD2, BG1, IO1, IM1, ID1, IG1
-        names = []
+        lines = [
+            f"######  {self.team_name.upper()}  ######",
+            f"Head Coach: {self.coaches[0]}",
+            f"OC: {self.coaches[1]}, DC: {self.coaches[2]}",
+            f"",
+            f"--- STARTERS ---",
+            dict_to_str(self.starters),
+            f"",
+            f"--- BENCH ---",
+            dict_to_str(self.bench),
+            f"",
+            f"--- RESERVES ---",
+            ", ".join(self.reserves),
+        ]
+        return "\n".join(lines)
 
-        raise NotImplementedError
+    @classmethod
+    def from_sheet(cls, sheet_handler, team_name):
+        """
+        Get all of the information for the specified team from the google sheet
+
+        Inputs:
+            1. sheet_handler (SheetHandler): object holding credentials for the Google Sheet
+            2. team_name (str): team name is just the location (e.g. "Boston" not "Boston Foxes")
+
+        Return:
+            (Team): team object for the specified team
+        """
+
+        team_info = sheet_handler.get_full_team_values(team_name)
+        coaches = [team_info[0][2], team_info[1][2], team_info[2][2]]
+        starters = {
+            "Forwards":[team_info[5][1], team_info[6][1], team_info[7][1]],
+            "Midfielders":[team_info[8][1], team_info[9][1], team_info[10][1]],
+            "Defense":[team_info[11][1], team_info[12][1], team_info[13][1]],
+            "Goalie":team_info[14][1]
+        }
+        bench = {
+            "Forwards":[team_info[17][1], team_info[18][1]],
+            "Midfielders":[team_info[19][1], team_info[20][1]],
+            "Defense":[team_info[21][1], team_info[22][1]],
+            "Goalie":team_info[23][1]
+        }
+        reserves = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
+
+        return Team(
+            team_name=team_name,
+            coaches=coaches,
+            starters=starters,
+            bench=bench, 
+            reserves=reserves
+        )
     
+    def prepare_players(self):
+        """
+        Link all of the players on the team to their player cards
+        """
+        # Implement this once players have been implemented
+
+        raise NotImplementedError
+
+
 
     

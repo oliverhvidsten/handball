@@ -50,7 +50,7 @@ class SheetHandler:
             (Sheet Object?): A sheet object to be read in a specific order
         """
         range = f"{team_name}!{range}"
-        team_sheet = self.sheet.get(
+        team_sheet = self.sheet.values().get(
             spreadsheetId=self.sheet_id, 
             range=range,
             ).execute()
@@ -135,17 +135,6 @@ class SheetHandler:
         for note in new_notes:
             rows.append({"values": [{"note": note}]})
 
-
-
-
-        # Fetch the spreadsheet metadata to get the sheet IDs
-        spreadsheet = self.sheet.get(spreadsheetId=self.sheet_id).execute()
-
-        # Print all sheet names and their sheet IDs
-        sheets = spreadsheet.get('sheets', [])
-        print(sheets)
-        for sheet in sheets:
-            print(f"{sheet['properties']['title']}: {sheet['properties']['sheetId']}")
         
         # Now, format into a request
         requests = [
@@ -174,16 +163,34 @@ class SheetHandler:
         
 
 """
-------TEST OUT NOTE READ AND WRITE------
-         
+
+#------TEST OUT NOTE READ AND WRITE------
+import random
 sheet_handler = SheetHandler()
+
+values = sheet_handler.get_team_values("Boston", PLAYERS_RANGE)
+i = 0
+
+new_names = []
+for j, value in enumerate(values):
+    if j in [10,11,19,20]:
+        new_names.append(values[j])
+    else:
+        i += 1
+        new_names.append([f"Player {i}"])
+
+sheet_handler.update_team_values("Boston", new_names, PLAYERS_RANGE)
+
 notes, names = sheet_handler.get_player_notes("Boston")
 
-for note, name in zip(notes, names):
-    print(f"{name}: {note}")
-
 for i in range(len(notes)):
-    # notes[i] = f"<WRITE SOMETHING HERE>"
+    if i in [10,11,19,20]:
+        continue
+    age = random.randint(25, 32) 
+    money = random.randint(5,25)
+    years = random.randint(1,5)
+    notes[i] = f"Age: {age}\nContract: {years}/${money}"
+
     # notes[i] = "" # This deletes notes
 
 sheet_handler.update_player_notes("Boston", notes)
