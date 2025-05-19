@@ -7,9 +7,14 @@ Date: 1/20/2025 10:38AM PST
 from utils import dict_to_str
 from sheets_handler import SheetHandler
 
-class Team():
-
+class TeamInfo():
     """
+    The TeamInfo class holds all of the Information about the team, but not the actual player objects.
+    This class is used to directly communicate with the google sheet.
+
+    Convert a TeamInfo object to a Team object to get the inputs to simulate a game.
+    This willl require turning player names (str) into player objects (Player)
+
     Team Structure:
     Coaching Staff:
         - Head Coach
@@ -102,7 +107,7 @@ class Team():
         }
         reserves = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
 
-        return Team(
+        return TeamInfo(
             team_name=team_name,
             coaches=coaches,
             starters=starters,

@@ -1,9 +1,17 @@
 REGULATION_TIME = 60*3600
 
+STARTER_MINUES = 45
+BENCH_MINUTES = 22.5
+
+STARTER_SHOOTING_LIKELIHOOD = 1.15  # chances multiplier
+OFFENSE_SHOOTING_LIKELIHOOD = 1.2  # chances multiplier
+
+TIME_PER_PASS = 2
+TIME_PER_SHOT = 5
 
 
 # tune probabilities
-K = 0.5
+K = 0.35
 
 
 
