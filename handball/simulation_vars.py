@@ -1,3 +1,11 @@
+"""
+Name: simulation_vars.py
+Description: Similar purpos to constants.py but reserved for game information
+Author: Oliver Hvidsten
+"""
+
+
+
 REGULATION_TIME = 60*3600
 
 STARTER_MINUES = 45

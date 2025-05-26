@@ -1,4 +1,9 @@
 """
+Name: players.py
+Description: Holds the Player class and other relvant items for holding player information
+Author: Chase Harrington, Oliver Hvidsten 
+
+
 Non-Exhaustive List of Player attributes
 - Physical Attributes (age, height, weight)
 - Position
