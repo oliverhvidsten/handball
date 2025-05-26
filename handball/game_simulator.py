@@ -309,10 +309,10 @@ class StatTracker():
         ## SET UP HOME TEAM INFO
         self.home_team_name = home_team.name
         self.home_scorers = list(chain(
-            home_team.starters.offense, # 3 players
-            home_team.starters.midfield, # 3 players
-            home_team.bench.offense, # 2 players
-            home_team.bench.midfield, # 2 players
+            home_team.starters.forwards, # 3 players
+            home_team.starters.midfielders, # 3 players
+            home_team.bench.forwards, # 2 players
+            home_team.bench.midfielders, # 2 players
             ))
         
         # Weight by the minutes played and other factors of play
@@ -331,10 +331,10 @@ class StatTracker():
         ## SET UP AWAY TEAM INFO
         self.away_team_name = away_team.name
         self.away_scorers = list(chain(
-            away_team.starters.offense, # 3 players
-            away_team.starters.midfield, # 3 players
-            away_team.bench.offense, # 2 players
-            away_team.bench.midfield, # 2 players
+            away_team.starters.forwards, # 3 players
+            away_team.starters.midfielders, # 3 players
+            away_team.bench.forwards, # 2 players
+            away_team.bench.midfielders, # 2 players
             ))
         
         # Weight by the minutes played and other factors of play

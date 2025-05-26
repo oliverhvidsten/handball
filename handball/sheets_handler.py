@@ -9,7 +9,7 @@ import os
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-from constants import TEAM_RANGE, PLAYERS_RANGE, SHEET_ID_NUM
+from constants import TEAM_RANGE, PLAYERS_RANGE, DRAFT_PICKS_RANGE, SHEET_ID_NUM
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 #SHEET_ID = '1MqfFG71GlBdGwXlEtdgygbcxIjpcpUFi71dfvKr2oYQ'
@@ -79,6 +79,39 @@ class SheetHandler:
             ).execute()
         
 
+    def get_draft_picks(self, team_name):
+        """
+        Gets all the draft_picks that a team owns
+
+        Inputs:
+            1. team_name (str): The name of the team for which information is being pulled
+
+        Outputs:
+            (list): strings denoting the draft picks
+        """
+        range = f"{team_name}!{DRAFT_PICKS_RANGE}"
+        team_sheet = self.sheet.values().get(
+            spreadsheetId=self.sheet_id, 
+            range=range,
+            ).execute()
+        return team_sheet.get("values", [])
+    
+    def update_draft_picks(self, team_name, edited_data):
+        """ Update draft picks on google sheet """
+        
+        body = {"values": edited_data}
+        range = f"{team_name}!{range}"
+        self.sheet.values().update(
+            spreadsheetId=self.sheet_id, 
+            range=range, 
+            valueInputOption= "RAW", 
+            body=body
+            ).execute()
+
+
+
+        
+
 
     def get_player_notes(self, team_name):
         """
@@ -125,7 +158,7 @@ class SheetHandler:
         Inputs:
             1. team_name (str): The name of the team for which the player notes are being pulled
             2. new_notes (list): Conains the notes for each player with gaps where there are breaks in the google sheet
-                    -- There are 2 spaces in between the starers and bench and the bench and reserves
+                    -- There are 2 spaces in between the starters and bench and the bench and reserves
 
         Outputs:
             None
