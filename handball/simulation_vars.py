@@ -14,4 +14,18 @@ TIME_PER_SHOT = 5
 K = 0.35
 
 
+# overall season structure
+GAMES_IN_SEASON = 50
+
+
+# player info
+MINOR_INJURIES = [
+    "Finger (Sprain)", "Knee (Strain)", "Ankle (Sprain)"
+    ]
+MODERATE_INJURIES = [
+    "Finger (Minor Fracture)", "Knee (Sprain)", "Shoulder (Sprain)"
+    ]
+MAJOR_INJURIES = [
+    "Finger (Major Fracture)", "ACL (Tear)", "MCL (Tear)"
+    ]
 
