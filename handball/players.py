@@ -59,6 +59,8 @@ class Player():
 
     awards_won: list
 
+    current_season_log: dict
+
 
 
     def create_new_player(cls, name, humor):
@@ -139,6 +141,11 @@ class Player():
         #Trajectory
 
         #Misc
+        stats["current_season_log"] = {
+            "shots_taken": list(), # list of number of shots taken in each game (to get a shooting percentage)
+            "goals": list(), # list of number of goals scored in each game
+            "performances": list(), # list of overall game performances (contributions to overall team score, bench players scaled to full contributions)
+        }
         stats["awards_won"] = []
 
         return cls(*stats)
@@ -191,6 +198,9 @@ class Player():
         self.year_of_injury.append(year) ###############
         self.injury_log.add()
         ###Injury type and duration###############
+
+    def total_season_goals(self):
+        return sum(self.current_season_log["goals"])
 
 
 

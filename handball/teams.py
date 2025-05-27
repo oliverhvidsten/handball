@@ -53,6 +53,7 @@ class TeamInfo():
     bench: dict # dictionary holding lists for forwards, midfielders, and defense, and one goalie string
     reserve: list # 1x4 list of reserve player names
     draft_picks: dict # 2 element dict containing 1xN (1st round) and 1xM (2nd round) lists of draft picks that a team owns
+    record: list # 1x3 list holding wins,losses,ties
     raw_data: tuple
 
     def __str__(self):
@@ -75,6 +76,7 @@ class TeamInfo():
 
     @classmethod
     def from_sheet(cls, sheet_handler, team_name, get_draft_picks):
+        #TODO: put record and salary information in TeamInfo Object
         """
         Get all of the information for the specified team from the google sheet
 
@@ -195,6 +197,17 @@ class Team():
     bench: Subroster
     reserves: list # list of player objects
     draft_picks: list # list of strings
+    record: list # wins, losses, ties
+
+    def win(self):
+        self.record[0] += 1
+        
+    def lose(self):
+        self.record[1] += 1
+
+    def tie(self):
+        self.record[2] += 1
+
 
 
     def from_TeamInfo(cls, team_info:TeamInfo):
@@ -221,6 +234,58 @@ class Team():
         with open(f"datafiles/{self.team_name.lower()}.json", "w") as f:
             json.dump(f)
 
+
+    def update_performances(self, performances):
+        """ Add the individual game performances to the players' objects """
+        for i, performance in enumerate(performances):
+            if i < 3:
+                self.starters.forwards[i].current_season_log["performances"].append(performance)
+            elif i < 6:
+                self.starters.midfielders[i-3].current_season_log["performances"].append(performance)
+            elif i < 9:
+                self.starters.defense[i-6].current_season_log["performances"].append(performance)
+            elif i < 11:
+                self.bench.forwards[i-9].current_season_log["performances"].append(performance)
+            elif i < 13:
+                self.bench.midfielders[i-11].current_season_log["performances"].append(performance)
+            else:
+                self.bench.defense[i-13].current_season_log["performances"].append(performance)
         
+        # Reserves do not play, set performances to 0
+        for reserve in self.reserves:
+            reserve.current_season_log["performances"].append(0)
 
 
+
+
+
+    def update_offensive_stats(self, goals_scored, shots_taken):
+        """ 
+        Add the goals scored by all of the eligible goal scorers as well as how many shots they took
+        Additionally, put 0 for all offensive records of non-offensive players
+        """
+        
+        for i, (goals, shots) in enumerate(zip(goals_scored, shots_taken)):
+            if i < 3:
+                self.starters.forwards[i].current_season_log["goals"].append(goals)
+                self.starters.forwards[i].current_season_log["shots_taken"].append(shots)
+            elif i < 6:
+                self.starters.midfielders[i-3].current_season_log["goals"].append(goals)
+                self.starters.midfielders[i-3].current_season_log["shots_taken"].append(shots)
+            elif i < 8:
+                self.bench.forwards[i-6].current_season_log["goals"].append(goals)
+                self.bench.forwards[i-6].current_season_log["shots_taken"].append(shots)
+            else:
+                self.bench.midfielders[i-8].current_season_log["goals"].append(goals)
+                self.bench.midfielders[i-8].current_season_log["shots_taken"].append(shots)
+
+        # set all goals scored to 0 for defenders and reserves
+        for defender in self.starters.defense:
+            defender.current_season_log["goals"].append(0)
+            defender.current_season_log["shots_taken"].append(0)
+        for defender in self.bench.defense:
+            defender.current_season_log["goals"].append(0)
+            defender.current_season_log["shots_taken"].append(0)
+        for reserve in self.reserves:
+            reserve.current_season_log["goals"].append(0)
+            reserve.current_season_log["shots_taken"].append(0)
