@@ -89,25 +89,13 @@ class SheetHandler:
         Outputs:
             (list): strings denoting the draft picks
         """
-        range = f"{team_name}!{DRAFT_PICKS_RANGE}"
-        team_sheet = self.sheet.values().get(
-            spreadsheetId=self.sheet_id, 
-            range=range,
-            ).execute()
-        return team_sheet.get("values", [])
+        return self.get_team_values(team_name, DRAFT_PICKS_RANGE)
+
     
     def update_draft_picks(self, team_name, edited_data):
         """ Update draft picks on google sheet """
-        
-        body = {"values": edited_data}
-        range = f"{team_name}!{range}"
-        self.sheet.values().update(
-            spreadsheetId=self.sheet_id, 
-            range=range, 
-            valueInputOption= "RAW", 
-            body=body
-            ).execute()
 
+        self.update_team_values(team_name, edited_data, DRAFT_PICKS_RANGE)
 
 
         

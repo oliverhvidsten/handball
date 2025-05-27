@@ -63,9 +63,8 @@ class GameSimulator():
             scorer_stats = [stat for stats in scorer_stats for stat in stats]
 
             # Get the offense stat by summing over all stats
-            combined_list = [start_forward_offense, start_middie_offense, start_defense_offense, bench_forward_offense, bench_middie_offense, bench_defense_offense]
-            team_obj.update_performances(combined_list)
-            offense = sum(np.array([stat for stats in combined_list for stat in stats]) * (np.array(minutes_list) / 60))
+            combined_list_off = [start_forward_offense, start_middie_offense, start_defense_offense, bench_forward_offense, bench_middie_offense, bench_defense_offense]
+            offense = sum(np.array([stat for stats in combined_list_off for stat in stats]) * (np.array(minutes_list) / 60))
 
 
             ## Calculate defense stats for each player
@@ -76,18 +75,29 @@ class GameSimulator():
             bench_middie_defense = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench.midfielders] * MIDDIE_STATS
             bench_defense_defense = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench.defense] * MAIN_STAT
 
-            combined_list = [start_forward_defense, start_middie_defense, start_defense_defense, bench_forward_defense, bench_middie_defense, bench_defense_defense]
-            defense = sum(np.array([stat for stats in combined_list for stat in stats]) * (np.array(minutes_list) / 60))
+            combined_list_def = [start_forward_defense, start_middie_defense, start_defense_defense, bench_forward_defense, bench_middie_defense, bench_defense_defense]
+            defense = sum(np.array([stat for stats in combined_list_def for stat in stats]) * (np.array(minutes_list) / 60))
 
-            return offense, defense, scorer_stats
+
+            ## Calculate goalies' stats
+            goalie = np.random.normal(team_obj.starters.goalie.goalie_skill, team_obj.starters.goalie.variance) * 4
+            goalie_reserve = np.random.normal(team_obj.bench.goalie.goalie_skill, team_obj.bench.goalie.variance) * 4
+
+            # add goalie stats to these metrics
+            combined_list_off.extend([0,0])
+            combined_list_def.extend([goalie, goalie_reserve])
+            combined_list = np.array(combined_list_off) + np.array(combined_list_def)
+
+            team_obj.update_performances(combined_list)
+
+            return offense, defense, goalie, goalie_reserve, scorer_stats
 
         home_offense, home_defense, home_scorer_stats = calculate_stats(self.home_team)
         away_offense, away_defense, away_scorer_stats = calculate_stats(self.away_team)
 
  
         home_ratio = home_offense / (home_offense + away_defense)
-        home_goalie = np.random.normal(self.home_team.goalie.goalie_score, self.home_team.goalie.variance)
-        home_goalie_reserve = np.random.normal(self.home_team.bench.goalie.goalie_skill, self.home_team.bench.goalie.variance)
+        
 
         away_ratio = away_offense / (away_offense + home_defense)
         away_goalie = np.random.normal(self.away_team.starters.goalie.goalie_skill, self.away_team.starters.goalie.variance)
@@ -102,6 +112,7 @@ class GameSimulator():
 
 
     def simulate_game(self):
+        # TODO: Overtime
 
         ## Coin Flip
         if self.prob_stack.pop() <= 0.5:
@@ -150,40 +161,6 @@ class GameSimulator():
         self.postgame()
 
 
-    def postgame(self):
-        
-        # Add win and loss to the correct teams' records
-        if self.home_score > self.away_score:
-            self.home_team.win()
-            self.away_team.lose()
-        elif self.away_score > self.home_score:
-            self.home_team.lose()
-            self.away_team.win()
-        else: # In case of a tie
-            if self.allow_tie:
-                self.home_team.tie()
-                self.away_team.tie()
-            else:
-                # TODO: Figure out what happens in the case of a tie
-                raise NotImplementedError
-
-
-
-
-        # TODO: Store the score tracker paragraph from the StatTracker
-        # TODO: Save a descriptive one-liner about the game
-
-        # Update player objects with final offensive stats
-        self.home_team.update_offensive_stats(
-            goals_scored=self.stat_tracker.home_goals, 
-            shots_taken=self.stat_tracker.home_shots
-        )
-        self.away_team.update_offensive_stats(
-            goals_scored=self.stat_tracker.away_goals,
-            shots_taken=self.stat_tracker.away_shots
-        )
-
-
     def simulate_half(self, second_half=False):
             swap_goalie = second_half
             
@@ -224,7 +201,11 @@ class GameSimulator():
                     self.ball_position = 40-turnover_position
                 elif scored: 
                     self.ball_position = 20
-                    self.game_clock.decrement(TIME_AFTER_SCORE)
+                    try:
+                        self.game_clock.decrement(TIME_AFTER_SCORE)
+                    except:
+                        break
+
 
 
     def offensive_posession(self):
@@ -292,6 +273,39 @@ class GameSimulator():
                     break
 
         return scored, turnover_position
+    
+    def postgame(self):
+        
+        # Add win and loss to the correct teams' records
+        if self.home_score > self.away_score:
+            self.home_team.win()
+            self.away_team.lose()
+        elif self.away_score > self.home_score:
+            self.home_team.lose()
+            self.away_team.win()
+        else: # In case of a tie
+            if self.allow_tie:
+                self.home_team.tie()
+                self.away_team.tie()
+            else:
+                # TODO: Figure out what happens in the case of a tie
+                raise NotImplementedError
+
+
+
+
+        # TODO: Store the score tracker paragraph from the StatTracker
+        # TODO: Save a descriptive one-liner about the game
+
+        # Update player objects with final offensive stats
+        self.home_team.update_offensive_stats(
+            goals_scored=self.stat_tracker.home_goals, 
+            shots_taken=self.stat_tracker.home_shots
+        )
+        self.away_team.update_offensive_stats(
+            goals_scored=self.stat_tracker.away_goals,
+            shots_taken=self.stat_tracker.away_shots
+        )
 
 """
 def old__simulate_game(home_team, away_team):
@@ -367,6 +381,7 @@ class StatTracker():
     """
     Keeps track of players stats throughout the match
     """
+    # TODO: add in goalie saves and save percentage
     def __init__(self, home_team, home_scorer_stats, away_team, away_scorer_stats):
 
         # Scoring Updates

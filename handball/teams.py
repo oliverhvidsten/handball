@@ -248,8 +248,12 @@ class Team():
                 self.bench.forwards[i-9].current_season_log["performances"].append(performance)
             elif i < 13:
                 self.bench.midfielders[i-11].current_season_log["performances"].append(performance)
-            else:
+            elif i < 15:
                 self.bench.defense[i-13].current_season_log["performances"].append(performance)
+            elif i == 15:
+                self.starters.goalie.current_season_log["performances"].append(performance)
+            else:
+                self.bench.goalie.current_season_log["performances"].append(performance)
         
         # Reserves do not play, set performances to 0
         for reserve in self.reserves:
@@ -279,13 +283,19 @@ class Team():
                 self.bench.midfielders[i-8].current_season_log["goals"].append(goals)
                 self.bench.midfielders[i-8].current_season_log["shots_taken"].append(shots)
 
-        # set all goals scored to 0 for defenders and reserves
+        # set all goals scored to 0 for defenders, goalies, and reserves
         for defender in self.starters.defense:
             defender.current_season_log["goals"].append(0)
             defender.current_season_log["shots_taken"].append(0)
         for defender in self.bench.defense:
             defender.current_season_log["goals"].append(0)
             defender.current_season_log["shots_taken"].append(0)
+
+        self.starters.goalie.current_season_log["goals"].append(0)
+        self.starters.goalie.current_season_log["shots_taken"].append(0)
+        self.bench.goalie.current_season_log["goals"].append(0)
+        self.bench.goalie.current_season_log["shots_taken"].append(0)
+
         for reserve in self.reserves:
             reserve.current_season_log["goals"].append(0)
             reserve.current_season_log["shots_taken"].append(0)

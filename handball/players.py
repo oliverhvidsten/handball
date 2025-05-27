@@ -199,6 +199,7 @@ class Player():
         self.injury_log.add()
         ###Injury type and duration###############
 
+    @property
     def total_season_goals(self):
         return sum(self.current_season_log["goals"])
 
