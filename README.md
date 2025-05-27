@@ -78,4 +78,5 @@ Holds useful functions
 
 `dict_to_str`: Creates a string represetantion of a dictionary (for debugging)
 
-`ProbabilityStack`: Holds randomly generated values between 0-1 to be used in the randomized parts of the simulation. Preallocates for speed. 
+`ProbabilityStack`: Holds randomly generated values between 0-1 to be used in the randomized parts of the simulation. Preallocates for speed.
+- `pop`: Access a random number and remove it from the stack. If this function runs out of random numbers, it immediately regenerates itself.

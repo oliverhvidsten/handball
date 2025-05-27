@@ -41,10 +41,10 @@ class ProbabilityStack():
         try:
             return self.backing_array[self.index-1]
         except IndexError:
-            self.regen_stack()
+            self._regen_stack()
             return self.backing_array[self.index-1]
         
-    def regen_stack(self):
+    def _regen_stack(self):
         """ Regenerate the backing array with new probability values """
         self.backing_array = np.random.random(len(self.backing_array))
         self.index=1    
