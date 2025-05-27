@@ -16,7 +16,9 @@ To be implemented (limited existing functionality is outdated)
 - `simulate_half`: Called by `simulate_game`, simulates one half of play. Handles the scoring and possession flipping after turnovers. Advances the game clock after events such as a score.
 - `offensive_posession`: Called by `simulate_half`, uses information regarding the current offense and defense to evaluate success/failure of passes and shots. Advances the game clock after passes and shots. Terminates upon turnover or score or clock expiration.
 - `postgame`: Handles the game results and adds cumulative offensive stats (shots taken and goals) to the player objects of the offensive players.
+
 `GameClock`: Holds the time left in the game and handles clock progression. Divides by zero when time expires to alleviate necessity of checking an if/else at every decrement.
+
 `StatTracker`: Keeps track of players stats throughout the match (goals, shots taken, goalie saves(to be added)). Iteratively updates a scoring tracker that keeps a descriptive log of the scoring plays.
 - `halftime`: Make halftime adjustments
 - `get_score_info`: Get a log of scoring plays after game is finished
@@ -30,6 +32,7 @@ To be implemented (limited existing functionality is outdated)
 - `advance_year`: Updates to player info due to new season (age, contract, etc)
 - `injure`: Handles an injury happening to a player. Adds info to the log
 - `total_season_goals`: Property lambda function. Returns total goals up and to this point in the season.
+
 `Injury Report`: Holds player injury information (current and historical)
 - Most methods are pretty straight forward here
 
