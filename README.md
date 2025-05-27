@@ -75,5 +75,7 @@ Holds constants pertinent to the running of the simulation
 
 ### utils.py
 Holds useful functions
+
 `dict_to_str`: Creates a string represetantion of a dictionary (for debugging)
+
 `ProbabilityStack`: Holds randomly generated values between 0-1 to be used in the randomized parts of the simulation. Preallocates for speed. 
