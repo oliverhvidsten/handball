@@ -11,9 +11,9 @@ Date: 1/20/2025 12:32PM PST
 import numpy as np
 from itertools import chain
 
-from utils import ProbabilityStack
-from teams import Team
-from simulation_vars import (
+from handball.utils import ProbabilityStack
+from handball.teams import Team
+from handball.simulation_vars import (
     REGULATION_TIME, K, TIME_PER_PASS, TIME_PER_SHOT, MAIN_STAT, SECONDARY_STAT, MIDDIE_STATS, TIME_AFTER_SCORE, STARTER_MINUTES, BENCH_MINUTES
     )
 
@@ -92,16 +92,13 @@ class GameSimulator():
 
             return offense, defense, goalie, goalie_reserve, scorer_stats
 
-        home_offense, home_defense, home_scorer_stats = calculate_stats(self.home_team)
-        away_offense, away_defense, away_scorer_stats = calculate_stats(self.away_team)
+        home_offense, home_defense, home_goalie, home_goalie_reserve, home_scorer_stats = calculate_stats(self.home_team)
+        away_offense, away_defense, away_goalie, away_goalie_reserve, away_scorer_stats = calculate_stats(self.away_team)
 
  
         home_ratio = home_offense / (home_offense + away_defense)
-        
-
         away_ratio = away_offense / (away_offense + home_defense)
-        away_goalie = np.random.normal(self.away_team.starters.goalie.goalie_skill, self.away_team.starters.goalie.variance)
-        away_goalie_reserve = np.random.normal(self.away_team.bench.goalie.goalie_skill, self.away_team.bench.goalie.variance)
+
 
         return (
             {"offense": home_offense, "defense": home_defense, "ratio": home_ratio, "goalie": home_goalie, "bench_goalie": home_goalie_reserve},
@@ -217,7 +214,7 @@ class GameSimulator():
 
         # Evaluate shots and passes until something happens
         while True:
-            if self.prob_stack.pop() < 1 / (1 + np.e ^ (-0.3 * (self.ball_position-34))): # odds of taking a shot
+            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))): # odds of taking a shot
                 try: # Decrement 
                     self.game_clock.decrement(TIME_PER_SHOT)
                 except:
@@ -226,11 +223,12 @@ class GameSimulator():
                 
                 # Take a shot with the stat tracker object
                 scored, off_recovery, turnover = self.stat_tracker.take_shot(
-                    self.prob_stack,
-                    self.offense_stats,
-                    self.defense_stats,
-                    self.home_posession,
-                    self.game_clock.time_left,
+                    ball_position=self.ball_position,
+                    prob_stack=self.prob_stack,
+                    offense_stats=self.offense_stats,
+                    defense_stats=self.defense_stats,
+                    home_posession=self.home_posession,
+                    time_left=self.game_clock.time_left,
                 )
                 if turnover: 
                     # Put in info for where the turnover took place (don't track turnovers due to missed shots)
@@ -249,11 +247,12 @@ class GameSimulator():
                     except:
                         # Time has run out, immediately take a buzzer beater shot
                         scored, _, _ = self.stat_tracker.take_shot(
-                            self.prob_stack,
-                            self.offense_stats,
-                            self.defense_stats,
-                            self.home_posession,
-                            self.game_clock.time_left,
+                            ball_position=self.ball_position,
+                            prob_stack=self.prob_stack,
+                            offense_stats=self.offense_stats,
+                            defense_stats=self.defense_stats,
+                            home_posession=self.home_posession,
+                            time_left=self.game_clock.time_left,
                         )
                         break
 
@@ -368,6 +367,7 @@ class GameClock():
         self.time_left = max(0, self.time_left-amount)
         10/self.time_left  # This will cause the game clock to raise an error when it reaches 0
 
+    @staticmethod
     def time_to_str(seconds):
         """ Convert seconds (int) to mm:ss format (str)"""
         mm = seconds // 60
@@ -443,7 +443,7 @@ class StatTracker():
         return "\n".join(info)
 
 
-    def take_shot(self, prob_stack, offense_stats, defense_stats, home_posession, time_left):
+    def take_shot(self, ball_position, prob_stack, offense_stats, defense_stats, home_posession, time_left):
         """ Handles the shot taking mechanics and records relevant information """
         scored, off_recovery, turnover = False, False, False
 
@@ -469,7 +469,7 @@ class StatTracker():
         idx = np.random.choice(np.arange(len(scorers)), likelihood)
         shots[idx] += 1
 
-        if prob_stack.pop() < scorers_stats[idx].offense * np.e ^ (-K * (40-self.ball_position)): # If shot was taken, was it on goal?
+        if prob_stack.pop() < scorers_stats[idx].offense * np.exp(-K * (40-ball_position)): # If shot was taken, was it on goal?
             # Shot taken was on goal
             # Evaluate the result of the shot (weight the offense of the scorer more)
             if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers_stats[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
@@ -494,7 +494,7 @@ class StatTracker():
 
 
 def odds_of_taking_shot(yard):
-    return 1 / (1 + np.e ^ (-0.3 * (yard-34)))
+    return 1 / (1 + np.exp(-0.3 * (yard-34)))
     
 
 def generate_game_analysis(home_team, visiting_team, individual_performances, results_dump):

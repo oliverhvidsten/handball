@@ -25,7 +25,74 @@ import random
 from dataclasses import dataclass
 import numpy as np
 
-from simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES
+from handball.simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES
+
+
+@dataclass
+class InjuryReport():
+
+    active_injury: bool
+    injuries: list # list of tuples: (year, injury_type, injury duration, start_game, current)
+    
+    def __repr__(self):
+        str_dump = [f"This player has sustained {len(self.injuries)} injuries."]
+        for injury in self.injuries:
+            if injury[3] + injury[2] >= GAMES_IN_SEASON:
+                end_date = "END OF SEASON"
+            elif injury[4]:
+                end_date = "CURRENT"
+            else:
+                end_date = f"Game {injury[3] + injury[2]}"
+            str_dump.append(f"{injury[0]}: {injury} (Game {injury[3]} – {end_date})")
+        return "\n".join(str_dump)
+
+    def __len__(self):
+        return len(self.injuries)
+    
+    def add(self, year, injury_type, start_game):
+        """ Add an injury to the player's report """
+        if self.active_injury:
+            return False # A player should not be able to get reinjured (since they are not playing)
+        self.active_injury = True
+        
+        # Determine injury duration
+        if injury_type in MINOR_INJURIES:
+            injury_duration = max(0, np.round(np.random.normal(2, 1)))
+        elif injury_type in MODERATE_INJURIES:
+            injury_duration = max(0, np.round(np.random.normal(5, 2)))
+        elif injury_type in MAJOR_INJURIES:
+            injury_duration = max(0, np.round(np.random.normal(10, 3)))
+
+        # Add the injury description
+        self.injuries.append(
+            (year, injury_type, injury_duration, start_game, True)
+        )
+    
+        return injury_duration
+    
+
+    def update(self, game_number):
+        """ Update status of an active injury """
+        if self.active_injury:
+            if game_number > (self.injuries[-1][2] + self.injuries[-1][3]):
+                self.injuries[-1][4] = False
+                self.active_injury = False
+
+
+    def to_dict(self):
+        """ Prepare object to be saved as a JSON, tuples are not supported by JSON """
+        return {
+            "active_injury": self.active_injury,
+            "injuries": [list(injury) for injury in self.injuries]
+        }
+    
+    @classmethod
+    def from_dict(cls, d):
+        """ Create injury report object from dicionary that was previouly jsonified
+            tuples are not JSON supported, so they will have been made into tuples """
+        d["injuries"] = [tuple(injury) for injury in d["injuries"]]
+        return cls(**d)
+
 
 
 @dataclass
@@ -61,29 +128,32 @@ class Player():
 
     current_season_log: dict
 
-
-
+    @classmethod
     def create_new_player(cls, name, humor):
+        """
+        Create a player for the draft. This player not previously been in the league
+        Take in player name and relevant humor
+        """
         stats = dict()
         #Biographical
         stats["name"] = name
-        stats["age"] = random.normalvariate(27, 3)
-        stats["years_in_league"] = max(0, round(stats["age"] - random.uniform(18,21)))
+        stats["age"] = random.uniform(18,23)
+        #stats["years_in_league"] = max(0, round(stats["age"] - random.uniform(18,21)))
+        stats["years_in_league"] = 0
         stats["height"] = random.normalvariate(71, 2)
         stats["weight"] = random.normalvariate(175, 15)
 
         #Position
         temp_position = random.uniform(0,1)
-        if temp_position < 0.04:
+        if temp_position < 0.118:
             stats["position"] = 'Goalie'
-        elif temp_position < 0.36:
-            stats["position"] = 'Fullback'
-        elif temp_position < 0.52:
-            stats["position"] = 'Center'
-        elif temp_position < 0.68:
-            stats["position"] = 'Pivot'
+        elif temp_position < 0.412:
+            stats["position"] = 'Defense'
+        elif temp_position < 0.706:
+            stats["position"] = 'Offense'
         else:
-            stats["position"] = 'Winger'
+            stats["position"] = "Midfielder"
+
 
         #Stat Generation
         if humor == 0:
@@ -94,49 +164,50 @@ class Player():
             else:
                 goalie_skill = 0.1
         elif humor == 1:
-            offense = max(0, random.normalvariate(4, 1.75))
-            defense = max(0, random.normalvariate(4, 1.75))
+            offense = max(0, random.normalvariate(3, 1.75))
+            defense = max(0, random.normalvariate(3, 1.75))
             if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(4, 1.75))
+                goalie_skill = max(0, random.normalvariate(3.5, 1.75))
             else:
                 goalie_skill = 0.1
         elif humor == 2:
-            offense = max(0, random.normalvariate(6, 1.75))
-            defense = max(0, random.normalvariate(6, 1.75))
+            offense = max(0, random.normalvariate(5, 1.75))
+            defense = max(0, random.normalvariate(5, 1.75))
             if stats["position"] == 'Goalie':
                 goalie_skill = max(0, random.normalvariate(6, 1.75))
             else:
                 goalie_skill = 0.1
         else:
-            offense = max(0, random.normalvariate(8, 1.5))
-            defense = max(0, random.normalvariate(8, 1.5))
+            offense = max(0, random.normalvariate(7, 1.5))
+            defense = max(0, random.normalvariate(7, 1.5))
             if stats["position"] == 'Goalie':
                 goalie_skill = max(0, random.normalvariate(8, 1.5))
             else:
                 goalie_skill = 0.1
 
-        stats["offense"] = offense
-        stats["defense"] = defense
-        stats["goalie_skill"] = goalie_skill
+        # assign all stats, put a hard cap at skill level == 10
+        stats["offense"] = min(10, offense)
+        stats["defense"] = min(10, defense)
+        stats["goalie_skill"] = min(10, goalie_skill)
 
-        stats["max_offense"] = max(offense, offense + random.normalvariate(4, 0.5))
-        stats["max_defense"] = max(defense, defense + random.normalvariate(4, 0.5))
-        stats["max_goalie_skill"] = max(goalie_skill, goalie_skill + random.normalvariate(4, 0.5))
+        stats["max_offense"] = min(10, max(offense, offense + random.normalvariate(4, 0.5)))
+        stats["max_defense"] = min(10, max(defense, defense + random.normalvariate(4, 0.5)))
+        stats["max_goalie_skill"] = min(10, max(goalie_skill, goalie_skill + random.normalvariate(4, 0.5)))
 
         stats["variance"] = max(0, random.normalvariate(1.5, 0.5))
         
         #Injury
-        stats["isinjured"] = False
+        stats["is_injured"] = False
         stats["injury_risk"] = max(0.0005, random.normalvariate(0.001, 0.001))
-        stats["injury_log"] = InjuryReport(active_injuries=False, injuries=list())
+        stats["injury_log"] = InjuryReport(active_injury=False, injuries=list())
 
         #Contract: NEEDS ELABORATION
         stats["contract_term"] = 0
         stats["contract_value"] = 0
-        stats["remaining_years"] = 0
+        stats["years_remaining"] = 0
         stats["amount_paid"] = 0
-        stats["rookie_contract"] = False
-        stats["restricted_free_agent"] = False
+        stats["rookie_contract"] = True
+        stats["restricted_free_agent"] = True
 
         #Trajectory
 
@@ -148,7 +219,33 @@ class Player():
         }
         stats["awards_won"] = []
 
-        return cls(*stats)
+        return cls(**stats)
+    
+    def __eq__(self, otherPlayer):
+        """
+        Override the equals method, have it check every attribute
+        Print a message as to what is different between the two player objects
+        """
+
+        # Immediately throw a False if the comparator is None or not correct type
+        if otherPlayer is None:
+            return False
+        elif not isinstance(otherPlayer, Player):
+            return False
+        
+        diff_dict = dict()
+        for key in self.__dict__:
+            if self.__dict__[key] != otherPlayer.__dict__[key]:
+                diff_dict[key] = [self.__dict__[key], otherPlayer.__dict__[key]]
+
+        if len(diff_dict) > 0:
+            print("Differences between Players:")
+            for key, val in diff_dict.items():
+                print(f"{key} ==> Player1: {val[0]}, Player2: {val[1]}")
+            return False
+        
+        return True
+                
     
     def to_dict(self):
         """ Prepare object to be saved as a json"""
@@ -176,13 +273,15 @@ class Player():
             "amount_paid": self.amount_paid,
             "rookie_contract": self.rookie_contract,
             "restricted_free_agent": self.restricted_free_agent,
-            "awards_won": self.awards_won
+            "awards_won": self.awards_won,
+            "current_season_log": self.current_season_log
         }
     
+    @classmethod
     def from_dict(cls, d):
         """ Create player object from dictionary representation """
         d["injury_log"] = InjuryReport.from_dict(d["injury_log"])
-        return cls(*d)
+        return cls(**d)
 
 
     def advance_year(self):
@@ -191,86 +290,15 @@ class Player():
         self.years_in_league += 1
         self.years_remaining -= 1
     
-    def injure(self, year, injury_type):
+    def injure(self, year, injury_type, current_game):
         """ injure player """
         self.is_injured = True
         self.has_been_injured = True
-        self.year_of_injury.append(year) ###############
-        self.injury_log.add()
+        self.injury_log.add(year, injury_type, current_game)
         ###Injury type and duration###############
 
     @property
     def total_season_goals(self):
         return sum(self.current_season_log["goals"])
-
-
-
-
-
-
-@dataclass
-class InjuryReport():
-
-    active_injury = bool
-    injuries: list # list of tuples: (year, injury_type, injury duration, start_game, current)
-
-    def __repr__(self):
-        str_dump = [f"This player has sustained {len(self.injuries)} injuries."]
-        for injury in self.injuries:
-            if injury[3] + injury[2] >= GAMES_IN_SEASON:
-                end_date = "END OF SEASON"
-            elif injury[4]:
-                end_date = "CURRENT"
-            else:
-                end_date = f"Game {injury[3] + injury[2]}"
-            str_dump.append(f"{injury[0]}: {injury} (Game {injury[3]} – {end_date})")
-        return "\n".join(str_dump)
-
-
-    def __len__(self):
-        return len(self.injuries)
-    
-    def add(self, year, injury_type, start_game):
-        """ Add an injury to the player's report """
-        if self.active_injury:
-            return False # A player should not be able to get reinjured (since they are not playing)
-        self.active_injury = True
-        
-        # Determine injury duration
-        if injury_type in MINOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(2, 1)))
-        elif injury_type in MODERATE_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(5, 2.5)))
-        elif injury_type in MAJOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(10, 4)))
-
-        # Add the injury description
-        self.injuries.append(
-            (year, injury_type, injury_duration, start_game, True)
-        )
-    
-        return injury_duration
-    
-
-    def update(self, game_number):
-        """ Update status of an active injury """
-        if self.active_injury:
-            if game_number > (self.injuries[-1][2] + self.injuries[-1][3]):
-                self.injuries[-1][4] = False
-                self.active_injury = False
-
-
-    def to_dict(self):
-        """ Prepare object to be saved as a JSON, tuples are not supported by JSON """
-        return {
-            "active_injury": self.active_injury,
-            "injuries": [list(injury) for injury in self.injuries]
-        }
-    
-    def from_dict(cls, d):
-        """ Create injury report object from dicionary that was previouly jsonified
-            tuples are not JSON supported, so they will have been made into tuples """
-        d["injuries"] = [tuple(injury) for injury in d["injuries"]]
-        return cls(*d)
 
         

@@ -9,7 +9,7 @@ import os
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-from constants import TEAM_RANGE, PLAYERS_RANGE, DRAFT_PICKS_RANGE, SHEET_ID_NUM
+from handball.constants import TEAM_RANGE, PLAYERS_RANGE, DRAFT_PICKS_RANGE, SHEET_ID_NUM
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 #SHEET_ID = '1MqfFG71GlBdGwXlEtdgygbcxIjpcpUFi71dfvKr2oYQ'

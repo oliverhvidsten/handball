@@ -4,11 +4,11 @@ Description: This file contains code for the Team classes
 Author: Oliver Hvidsten (oliverhvidsten@gmail.com)
 Date: 1/20/2025 10:38AM PST
 """
-from utils import dict_to_str
-from sheets_handler import SheetHandler
-from dataclasses import dataclass
-from players import Player
+from handball.utils import dict_to_str
+from handball.sheets_handler import SheetHandler
+from handball.players import Player
 
+from dataclasses import dataclass
 import json
 
 @dataclass
@@ -70,7 +70,7 @@ class TeamInfo():
             dict_to_str(self.bench),
             f"",
             f"--- RESERVES ---",
-            ", ".join(self.reserves),
+            ", ".join(self.reserve),
         ]
         return "\n".join(lines)
 
@@ -110,16 +110,20 @@ class TeamInfo():
             "Defense":[team_info[21][1], team_info[22][1]],
             "Goalie":team_info[23][1]
         }
-        reserves = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
+        reserve = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
+
+        record = None
+        raise NotImplementedError
 
         return TeamInfo(
             team_name=team_name,
             coaches=coaches,
             starters=starters,
             bench=bench, 
-            reserves=reserves,
+            reserve=reserve,
             draft_picks=draft_picks,
-            raw_data=(team_info, draft_info)
+            raw_data=(team_info, draft_info),
+            record=record
         )
     
     def update_sheet(self, sheet_handler:SheetHandler, update_draft_picks=False):
@@ -141,7 +145,7 @@ class TeamInfo():
             team_info[i+21][1] = self.bench["Defense"][i]
 
         for i in range(4):
-            team_info[i+26][1] = self.reserves[i]
+            team_info[i+26][1] = self.reserve[i]
 
         team_info[14][1] = self.starters["Goalie"]
         team_info[23][1] = self.bench["Goalie"]
@@ -169,6 +173,7 @@ class Subroster():
     defense: list
     goalie: Player
 
+    @classmethod
     def from_TeamInfo(cls, subroster_type, team_dict):
         """ Create each subroster object from the data contained in the Team Info object """
         return cls(
@@ -196,7 +201,7 @@ class Team():
     starters: Subroster
     bench: Subroster
     reserves: list # list of player objects
-    draft_picks: list # list of strings
+    draft_picks: dict # keys: "1st Round" and "2nd Round"
     record: list # wins, losses, ties
 
     def win(self):
@@ -209,7 +214,7 @@ class Team():
         self.record[2] += 1
 
 
-
+    @classmethod
     def from_TeamInfo(cls, team_info:TeamInfo):
         """ Get Team object from Team Info object """
         with open(f"datafiles/{team_info.team_name.lower()}.json", "r") as f:
@@ -219,8 +224,9 @@ class Team():
             team_name=team_info.team_name,
             starters=Subroster.from_TeamInfo(team_info.starters, team_dict),
             bench=Subroster.from_TeamInfo(team_info.bench, team_dict),
-            reserves=[Player.from_dict(team_dict[name]) for name in team_info.reserves],
-            draft_picks=team_info.draft_picks # might be None if TeamInfo did not scrape this data
+            reserves=[Player.from_dict(team_dict[name]) for name in team_info.reserve],
+            draft_picks=team_info.draft_picks, # might be None if TeamInfo did not scrape this data
+            record=team_info.record
         )
     
     def update_team_dict(self):
@@ -232,7 +238,7 @@ class Team():
             updated_dict[reserve.name] = reserve.to_dict() 
 
         with open(f"datafiles/{self.team_name.lower()}.json", "w") as f:
-            json.dump(f)
+            json.dump(updated_dict, f)
 
 
     def update_performances(self, performances):
