@@ -37,6 +37,10 @@ class TeamInfo():
         - 1 Goalie
     
     Reserve
+
+    Record
+    Total Salaries
+    Raw Info
     
 
     --Starters/Bench--
@@ -52,8 +56,9 @@ class TeamInfo():
     starters: dict # dictionary holding lists for forwards, midfielders, and defense, and one goalie string
     bench: dict # dictionary holding lists for forwards, midfielders, and defense, and one goalie string
     reserve: list # 1x4 list of reserve player names
-    draft_picks: dict # 2 element dict containing 1xN (1st round) and 1xM (2nd round) lists of draft picks that a team owns
+    draft_picks: dict|None # 2 element dict containing 1xN (1st round) and 1xM (2nd round) lists of draft picks that a team owns
     record: list # 1x3 list holding wins,losses,ties
+    total_salaries: int # total salaries (in millions)
     raw_data: tuple
 
     def __str__(self):
@@ -96,6 +101,7 @@ class TeamInfo():
                 "1st Round": [pick for pick in draft_info[:, 0] if pick is not None and len(pick) > 0], 
                 "2nd Round": [pick for pick in draft_info[:, 1] if pick is not None and len(pick) > 0]}
         else:
+            draft_info = None
             draft_picks = None
         coaches = [team_info[0][2], team_info[1][2], team_info[2][2]]
         starters = {
@@ -112,8 +118,8 @@ class TeamInfo():
         }
         reserve = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
 
-        record = None
-        raise NotImplementedError
+        record = [int(num) for num in team_info[0][5].split("-")] # make W-L-T into [W, L, T]
+        total_salaries = int(team_info[1][5][1:-1]) # get everything except for the "$" at the start "M" at the end
 
         return TeamInfo(
             team_name=team_name,
@@ -122,8 +128,9 @@ class TeamInfo():
             bench=bench, 
             reserve=reserve,
             draft_picks=draft_picks,
-            raw_data=(team_info, draft_info),
-            record=record
+            record=record,
+            total_salaries=total_salaries,
+            raw_data=(team_info, draft_info)
         )
     
     def update_sheet(self, sheet_handler:SheetHandler, update_draft_picks=False):
@@ -149,15 +156,18 @@ class TeamInfo():
 
         team_info[14][1] = self.starters["Goalie"]
         team_info[23][1] = self.bench["Goalie"]
+        
+        team_info[0][5] = "-".join(self.record)
+        team_info[1][5] = f"${self.total_salaries}M"
 
         sheet_handler.update_full_team_values(team_name=self.team_name, edited_data=team_info)
 
         # If requested fill in the draft picks
         if update_draft_picks:
-            for i,first_round in enumerate(self.draft_picks["1st Round"]):
+            for i,first_round in enumerate(self.draft_picks["1st Round"]): # type: ignore
                 draft_info[i][0] = first_round
             
-            for i, second_round in enumerate(self.draft_picks["2nd Round"]):
+            for i, second_round in enumerate(self.draft_picks["2nd Round"]): # type: ignore
                 draft_info[i][1] = second_round
             
             sheet_handler.update_draft_picks(team_name=self.team_name, edited_data=draft_info)
@@ -201,7 +211,7 @@ class Team():
     starters: Subroster
     bench: Subroster
     reserves: list # list of player objects
-    draft_picks: dict # keys: "1st Round" and "2nd Round"
+    draft_picks: dict|None # keys: "1st Round" and "2nd Round"
     record: list # wins, losses, ties
 
     def win(self):

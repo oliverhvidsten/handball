@@ -25,7 +25,7 @@ import random
 from dataclasses import dataclass
 import numpy as np
 
-from handball.simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES
+from handball.simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES, STAT_GEN
 
 
 @dataclass
@@ -143,19 +143,52 @@ class Player():
         stats["height"] = random.normalvariate(71, 2)
         stats["weight"] = random.normalvariate(175, 15)
 
+
+        # Get overall score
+        overall = max(0, random.normalvariate(*STAT_GEN[humor]))
+
+        def split_rating(overall, is_midfielder):
+            """
+            Split the overall score into individual scores
+            """
+            if is_midfielder:
+                std = 0.5
+            else:
+                std = 1
+            
+            first_score = min(10, max(0, random.uniform(overall, std)))
+            second_score = (2*overall) - first_score
+
+            scores = [first_score, second_score]
+
+            if is_midfielder:
+                random.shuffle(scores)
+            else:
+                scores.sort()
+
+            return scores[0], scores[1]
+
         #Position
         temp_position = random.uniform(0,1)
         if temp_position < 0.118:
             stats["position"] = 'Goalie'
+            offense = 0.1
+            defense = 0.1
+            goalie_skill = overall
         elif temp_position < 0.412:
             stats["position"] = 'Defense'
+            defense, offense, = split_rating(overall, False)
+            goalie_skill = 0.1
         elif temp_position < 0.706:
             stats["position"] = 'Offense'
+            offense, defense, = split_rating(overall, False)
+            goalie_skill = 0.1
         else:
             stats["position"] = "Midfielder"
+            offense, defense, = split_rating(overall, True)
+            goalie_skill = 0.1
 
 
-        #Stat Generation
         if humor == 0:
             offense = max(0, random.normalvariate(2, 1.5))
             defense = max(0, random.normalvariate(2, 1.5))
@@ -167,21 +200,21 @@ class Player():
             offense = max(0, random.normalvariate(3, 1.75))
             defense = max(0, random.normalvariate(3, 1.75))
             if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(3.5, 1.75))
+                goalie_skill = max(0, random.normalvariate(3, 1.75))
             else:
                 goalie_skill = 0.1
         elif humor == 2:
             offense = max(0, random.normalvariate(5, 1.75))
             defense = max(0, random.normalvariate(5, 1.75))
             if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(6, 1.75))
+                goalie_skill = max(0, random.normalvariate(5, 1.75))
             else:
                 goalie_skill = 0.1
         else:
             offense = max(0, random.normalvariate(7, 1.5))
             defense = max(0, random.normalvariate(7, 1.5))
             if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(8, 1.5))
+                goalie_skill = max(0, random.normalvariate(7, 1.5))
             else:
                 goalie_skill = 0.1
 

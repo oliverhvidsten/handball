@@ -9,7 +9,7 @@ Date: 1/25/2025 1:28PM PST
 # Google Sheets formatting values (values in reference to PLAYER_RANGES)
 
 ## General Information
-TEAM_RANGE = "A3:D32"
+TEAM_RANGE = "A3:F32"
 
 STARTERS_ROW = 5 # These are the indicies of the first player in the section
 BENCH_ROW = 17

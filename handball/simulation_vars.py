@@ -4,7 +4,12 @@ Description: Similar purpos to constants.py but reserved for game information
 Author: Oliver Hvidsten
 """
 
-
+STAT_GEN = {
+            0: (2.0, 1.5),
+            1: (3.0, 1.75),
+            2: (5.0, 1.75),
+            3: (7.0, 1.5)
+        }
 
 REGULATION_TIME = 60*3600
 
