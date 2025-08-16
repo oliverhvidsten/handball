@@ -16,14 +16,17 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SERVICE_ACCOUNT_FILE = './gs_key.json'
 
 class SheetHandler:
-    def __init__(self):
-        self.sheet_id = input("Enter Spreadsheet ID: ")
+    def __init__(self, sheet_id):
+        self.sheet_id = sheet_id
 
         credentails = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
         service = build("sheets", 'v4', credentials=credentails)
         self.sheet = service.spreadsheets()
-
-
+    
+    @classmethod
+    def from_user_input(cls):
+        sheet_id = input("Enter Spreadsheet ID: ")
+        return cls(sheet_id)
 
     # The "Values" functions will only get the cell values that 
     def get_full_team_values(self, team_name):
@@ -156,7 +159,7 @@ class SheetHandler:
         for note in new_notes:
             rows.append({"values": [{"note": note}]})
 
-        
+        "A3:F32"
         # Now, format into a request
         requests = [
             {
@@ -165,10 +168,10 @@ class SheetHandler:
                     "fields": "note",
                     "range": {
                         "sheetId": SHEET_ID_NUM[team_name],
-                        "startRowIndex": 7,
+                        "startRowIndex": 3,
                         "endRowIndex": 32,
                         "startColumnIndex": 1,
-                        "endColumnIndex": 2
+                        "endColumnIndex": 6
                     }
                 }
             }

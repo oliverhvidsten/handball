@@ -94,7 +94,6 @@ class InjuryReport():
         return cls(**d)
 
 
-
 @dataclass
 class Player():
     name: str
@@ -129,7 +128,7 @@ class Player():
     current_season_log: dict
 
     @classmethod
-    def create_new_player(cls, name, humor):
+    def create_new_player(cls, name, position, humor):
         """
         Create a player for the draft. This player not previously been in the league
         Take in player name and relevant humor
@@ -158,7 +157,6 @@ class Player():
             
             first_score = min(10, max(0, random.uniform(overall, std)))
             second_score = (2*overall) - first_score
-
             scores = [first_score, second_score]
 
             if is_midfielder:
@@ -169,65 +167,34 @@ class Player():
             return scores[0], scores[1]
 
         #Position
-        temp_position = random.uniform(0,1)
-        if temp_position < 0.118:
-            stats["position"] = 'Goalie'
-            offense = 0.1
-            defense = 0.1
-            goalie_skill = overall
-        elif temp_position < 0.412:
-            stats["position"] = 'Defense'
-            defense, offense, = split_rating(overall, False)
-            goalie_skill = 0.1
-        elif temp_position < 0.706:
-            stats["position"] = 'Offense'
-            offense, defense, = split_rating(overall, False)
-            goalie_skill = 0.1
-        else:
-            stats["position"] = "Midfielder"
-            offense, defense, = split_rating(overall, True)
-            goalie_skill = 0.1
-
-
-        if humor == 0:
-            offense = max(0, random.normalvariate(2, 1.5))
-            defense = max(0, random.normalvariate(2, 1.5))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(2, 1.5))
-            else:
+        stats["position"] = position
+        match position:
+            case "Goalie":
+                offense, defense = 0.1, 0.1
+                goalie_skill = overall
+            case "Defense":
+                defense, offense, = split_rating(overall, False)
                 goalie_skill = 0.1
-        elif humor == 1:
-            offense = max(0, random.normalvariate(3, 1.75))
-            defense = max(0, random.normalvariate(3, 1.75))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(3, 1.75))
-            else:
+            case "Forward":
+                offense, defense, = split_rating(overall, False)
                 goalie_skill = 0.1
-        elif humor == 2:
-            offense = max(0, random.normalvariate(5, 1.75))
-            defense = max(0, random.normalvariate(5, 1.75))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(5, 1.75))
-            else:
+            case "Midfielder":
+                offense, defense, = split_rating(overall, True)
                 goalie_skill = 0.1
-        else:
-            offense = max(0, random.normalvariate(7, 1.5))
-            defense = max(0, random.normalvariate(7, 1.5))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(7, 1.5))
-            else:
-                goalie_skill = 0.1
+                
 
         # assign all stats, put a hard cap at skill level == 10
+        # Max scores can exceed 10 as this will affect the growth rate of the players
+        # - Though the player will in practice never get to exceed 10
         stats["offense"] = min(10, offense)
         stats["defense"] = min(10, defense)
         stats["goalie_skill"] = min(10, goalie_skill)
 
-        stats["max_offense"] = min(10, max(offense, offense + random.normalvariate(4, 0.5)))
-        stats["max_defense"] = min(10, max(defense, defense + random.normalvariate(4, 0.5)))
-        stats["max_goalie_skill"] = min(10, max(goalie_skill, goalie_skill + random.normalvariate(4, 0.5)))
+        stats["max_offense"] = max(offense, offense + random.normalvariate(2.5, 0.75))
+        stats["max_defense"] = max(defense, defense + random.normalvariate(2.5, 0.75))
+        stats["max_goalie_skill"] = min(10, max(goalie_skill, goalie_skill + random.normalvariate(2.5, 0.75)))
 
-        stats["variance"] = max(0, random.normalvariate(1.5, 0.5))
+        stats["variance"] = max(0, random.normalvariate(0.5, 0.5))
         
         #Injury
         stats["is_injured"] = False
@@ -335,3 +302,100 @@ class Player():
         return sum(self.current_season_log["goals"])
 
         
+
+@dataclass
+class PlayerInfo():
+    """
+    Class that holds all of the information held in the google sheet.
+    Lighter class to be used when full player class is not necessary
+
+    Note: position refers to original position, not positions currently being played
+    """
+    name: str
+    position: str
+    age: int
+    contract: str
+    injured: bool
+    offense: float
+    defense: float
+    goalie_skill: float
+
+
+    @classmethod
+    def from_sheet(cls, sheet_row:list, notes_dict:dict):
+        """
+        Create a PlayerInfo object from the information derived from the google sheet.
+        Notably, this contains the players name, stats, and any info in the notes section
+        Tests for this should be rigorous about what is found in the notes section as this is 
+        not meant to be flexible
+        """
+        name = sheet_row[1]
+        note = notes_dict[name]
+ 
+        lines = note.split("\n")
+        attributes = dict()
+        for line in lines:
+            attr_name, attr_value = line.lower().split()
+
+            if attr_name[:-1] in ["age"]: # attributes to be casted to int
+                attr_value = int(attr_value)
+            elif attr_name[:-1] in ["injured"]: # attributes to be casted to bool
+                attr_value = bool(attr_value)
+            attributes[attr_name[:-1]] = attr_value
+
+        # Assign stats (given position information)
+        if attributes["position"] == "goalie":
+            attributes["offense"] = 0.1
+            attributes["defense"] = 0.1
+            attributes["goalie_skill"] = sheet_row[2]
+        else:
+            attributes["offense"] = sheet_row[2]
+            attributes["defense"] = sheet_row[3]
+            attributes["goalie_skill"] = 0.1
+
+        return cls(name=name,**attributes)
+    
+    def to_sheet(self):
+        """
+        Return the same info out as the from_sheet method requests
+        Once again, this is not a flexible method
+        """
+        stats = (self.offense, self.defense, self.goalie_skill)
+        note = "\n".join([
+            f"Age: {self.age}",
+            f"Position: {self.position}",
+            f"Contract: {self.contract}", 
+            f"Injured: {self.injured}"
+            ])
+        
+        return self.name, note, stats
+
+
+    def update_from_Player(self, player_obj:Player):
+        """
+        Update PlayerInfo attributes (name and position will never be updated)
+        """
+        self.age = player_obj.age
+        self.contract = f"{player_obj.contract_term}/${player_obj.contract_value}"
+        self.injured = player_obj.is_injured
+
+        self.offense = player_obj.offense
+        self.defense = player_obj.defense
+        self.goalie_skill = player_obj.goalie_skill
+
+    def name_and_stats(self, is_goalie=False):
+        """
+        Return the player's name and stats
+        """
+        if is_goalie:
+            return [self.name, self.goalie_skill]
+        else:
+            return [self.name, self.offense, self.defense]
+        
+    def get_notes(self):
+        return"\n".join([
+            f"Age: {self.age}",
+            f"Position: {self.position}",
+            f"Contract: {self.contract}", 
+            f"Injured: {self.injured}"
+            ])

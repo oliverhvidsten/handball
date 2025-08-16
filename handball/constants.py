@@ -27,6 +27,7 @@ DRAFT_PICKS_RANGE = "G9:H108"
 
 SHEET_ID_NUM = {
 "Overview": 0,
+"EXAMPLE": 2120674058,
 "Boston": 1041798491,
 "New York": 1573880573,
 "Philadelphia": 1170392677,

@@ -6,7 +6,7 @@ Date: 1/20/2025 10:38AM PST
 """
 from handball.utils import dict_to_str
 from handball.sheets_handler import SheetHandler
-from handball.players import Player
+from handball.players import Player, PlayerInfo
 
 from dataclasses import dataclass
 import json
@@ -52,12 +52,12 @@ class TeamInfo():
         }
     """
     team_name: str  # just the location (e.g. "Boston" not "Boston Foxes")
-    coaches: list # 1x3 list of coaching staff [HC, OC, DC]
-    starters: dict # dictionary holding lists for forwards, midfielders, and defense, and one goalie string
-    bench: dict # dictionary holding lists for forwards, midfielders, and defense, and one goalie string
-    reserve: list # 1x4 list of reserve player names
+    coaches: list[str] # 1x3 list of coaching staff [HC, OC, DC]
+    starters: dict[str, list[PlayerInfo] | PlayerInfo] # dictionary holding lists for forwards, midfielders, and defense, and one goalie
+    bench: dict[str, list[PlayerInfo] | PlayerInfo] # dictionary holding lists for forwards, midfielders, and defense, and one goalie
+    reserve: list[PlayerInfo] # 1x4 list of reserve player names
     draft_picks: dict|None # 2 element dict containing 1xN (1st round) and 1xM (2nd round) lists of draft picks that a team owns
-    record: list # 1x3 list holding wins,losses,ties
+    record: list[int] # 1x3 list holding wins,losses,ties
     total_salaries: int # total salaries (in millions)
     raw_data: tuple
 
@@ -75,12 +75,12 @@ class TeamInfo():
             dict_to_str(self.bench),
             f"",
             f"--- RESERVES ---",
-            ", ".join(self.reserve),
+            ", ".join([playerinfo.name for playerinfo in self.reserve]),
         ]
         return "\n".join(lines)
 
     @classmethod
-    def from_sheet(cls, sheet_handler, team_name, get_draft_picks):
+    def from_sheet(cls, sheet_handler:SheetHandler, team_name, get_draft_picks):
         #TODO: put record and salary information in TeamInfo Object
         """
         Get all of the information for the specified team from the google sheet
@@ -88,15 +88,21 @@ class TeamInfo():
         Inputs:
             1. sheet_handler (SheetHandler): object holding credentials for the Google Sheet
             2. team_name (str): team name is just the location (e.g. "Boston" not "Boston Foxes")
-            3. get_draft_picks (boook): If True, access the draft picks. Otherwise, do not access
+            3. get_draft_picks (bool): If True, access the draft picks. Otherwise, do not access
 
         Return:
-            (Team): team object for the specified team
+            (TeamInfo): team object for the specified team
         """
 
         team_info = sheet_handler.get_full_team_values(team_name)
+        player_notes = sheet_handler.get_player_notes(team_name)
+        player_notes_dict = dict()
+        for player_name, note in player_notes:
+            if len(player_name) > 1:
+                player_notes_dict[player_name] = note
+
         if get_draft_picks:
-            draft_info = sheet_handler.get_draft_pics(team_name)
+            draft_info = sheet_handler.get_draft_picks(team_name)
             draft_picks = {
                 "1st Round": [pick for pick in draft_info[:, 0] if pick is not None and len(pick) > 0], 
                 "2nd Round": [pick for pick in draft_info[:, 1] if pick is not None and len(pick) > 0]}
@@ -105,18 +111,44 @@ class TeamInfo():
             draft_picks = None
         coaches = [team_info[0][2], team_info[1][2], team_info[2][2]]
         starters = {
-            "Forwards":[team_info[5][1], team_info[6][1], team_info[7][1]],
-            "Midfielders":[team_info[8][1], team_info[9][1], team_info[10][1]],
-            "Defense":[team_info[11][1], team_info[12][1], team_info[13][1]],
-            "Goalie":team_info[14][1]
+            "Forwards":[
+                PlayerInfo.from_sheet(team_info[5], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[6], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[7], player_notes_dict)
+            ],
+            "Midfielders":[
+                PlayerInfo.from_sheet(team_info[8], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[9], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[10], player_notes_dict)
+                ],
+            "Defense":[
+                PlayerInfo.from_sheet(team_info[11], player_notes_dict),
+                PlayerInfo.from_sheet(team_info[12], player_notes_dict),
+                PlayerInfo.from_sheet(team_info[13], player_notes_dict)
+                ],
+            "Goalie": PlayerInfo.from_sheet(team_info[14], player_notes_dict)
         }
         bench = {
-            "Forwards":[team_info[17][1], team_info[18][1]],
-            "Midfielders":[team_info[19][1], team_info[20][1]],
-            "Defense":[team_info[21][1], team_info[22][1]],
-            "Goalie":team_info[23][1]
+            "Forwards":[
+                PlayerInfo.from_sheet(team_info[17], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[18], player_notes_dict)
+                ],
+            "Midfielders":[
+                PlayerInfo.from_sheet(team_info[19], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[20], player_notes_dict)
+                ],
+            "Defense":[
+                PlayerInfo.from_sheet(team_info[21], player_notes_dict), 
+                PlayerInfo.from_sheet(team_info[22], player_notes_dict)
+                ],
+            "Goalie":PlayerInfo.from_sheet(team_info[23], player_notes_dict)
         }
-        reserve = [team_info[26][1], team_info[27][1], team_info[28][1], team_info[29][1]]
+        reserve = [
+            PlayerInfo.from_sheet(team_info[26], player_notes_dict),
+            PlayerInfo.from_sheet(team_info[27], player_notes_dict),
+            PlayerInfo.from_sheet(team_info[28], player_notes_dict),
+            PlayerInfo.from_sheet(team_info[29], player_notes_dict)
+        ]
 
         record = [int(num) for num in team_info[0][5].split("-")] # make W-L-T into [W, L, T]
         total_salaries = int(team_info[1][5][1:-1]) # get everything except for the "$" at the start "M" at the end
@@ -130,37 +162,60 @@ class TeamInfo():
             draft_picks=draft_picks,
             record=record,
             total_salaries=total_salaries,
-            raw_data=(team_info, draft_info)
+            raw_data=(team_info, draft_info, player_notes_dict)
         )
+    
     
     def update_sheet(self, sheet_handler:SheetHandler, update_draft_picks=False):
         """ Updates the google sheet to reflect any alterations that have occurred """
         # let's edit the raw data that we saved earlier
         team_info = self.raw_data[0]
         draft_info = self.raw_data[1]
+
+        ## TODO: lots of type errors here because we switch between list[PlayerInfo] and just PlayerInfo 
+        ## values in the dictionaries --> think about ways to recitify this
+
+        ## For now, putting type ignore flags
+        
+        # create list of empty strings to fill in with updated notes
+        new_notes = [""] * 25
         
         
         for i in range(3):
             team_info[i][2] = self.coaches[i] # update coaches
-            team_info[i+5][1] = self.starters["Forwards"][i]
-            team_info[i+8][1] = self.starters["Midfielders"][i]
-            team_info[i+11][1] = self.starters["Defense"][i]
+            team_info[i+5][1:4] = self.starters["Forwards"][i].name_and_stats() # type: ignore
+            team_info[i+8][1:4] = self.starters["Midfielders"][i].name_and_stats() # type: ignore
+            team_info[i+11][1:4] = self.starters["Defense"][i].name_and_stats() # type: ignore
+
+            new_notes[i] = self.starters["Forwards"][i].get_notes() # type: ignore
+            new_notes[i+3] = self.starters["Midfielders"][i].get_notes() # type: ignore
+            new_notes[i+6] = self.starters["Defense"][i].get_notes() # type: ignore
 
         for i in range(2):
-            team_info[i+17][1] = self.bench["Forwards"][i]
-            team_info[i+19][1] = self.bench["Midfielders"][i]
-            team_info[i+21][1] = self.bench["Defense"][i]
+            team_info[i+17][1:4] = self.bench["Forwards"][i].name_and_stats() # type: ignore
+            team_info[i+19][1:4] = self.bench["Midfielders"][i].name_and_stats() # type: ignore
+            team_info[i+21][1:4] = self.bench["Defense"][i].name_and_stats() # type: ignore
+
+            new_notes[i+12] = self.bench["Forwards"][i].get_notes() # type: ignore
+            new_notes[i+14] = self.bench["Midfielders"][i].get_notes() # type: ignore
+            new_notes[i+16] = self.bench["Defense"][i].get_notes() # type: ignore
+            
 
         for i in range(4):
-            team_info[i+26][1] = self.reserve[i]
+            team_info[i+26][1:4] = self.reserve[i].name_and_stats()
+            new_notes[i+21] = self.reserve[i].get_notes()
 
-        team_info[14][1] = self.starters["Goalie"]
-        team_info[23][1] = self.bench["Goalie"]
+        team_info[14][1] = self.starters["Goalie"].name_and_stats() # type: ignore
+        new_notes[9] = self.starters["Goalie"].get_notes() # type: ignore
+        team_info[23][1] = self.bench["Goalie"].name_and_stats() # type: ignore
+        new_notes[18] = self.starters["Goalie"].get_notes() # type: ignore
         
-        team_info[0][5] = "-".join(self.record)
+        team_info[0][5] = "-".join([str(value) for value in self.record])
         team_info[1][5] = f"${self.total_salaries}M"
 
+        # update the values and notes
         sheet_handler.update_full_team_values(team_name=self.team_name, edited_data=team_info)
+        sheet_handler.update_player_notes(team_name=self.team_name, new_notes=new_notes)
 
         # If requested fill in the draft picks
         if update_draft_picks:
@@ -172,6 +227,8 @@ class TeamInfo():
             
             sheet_handler.update_draft_picks(team_name=self.team_name, edited_data=draft_info)
 
+    def get_updates_from_Team(self):
+        raise NotImplementedError
 
 
 
@@ -187,10 +244,10 @@ class Subroster():
     def from_TeamInfo(cls, subroster_type, team_dict):
         """ Create each subroster object from the data contained in the Team Info object """
         return cls(
-            forwards=[Player.from_dict(team_dict[player_name]) for player_name in subroster_type["Forwards"]],
-            midfielders=[Player.from_dict(team_dict[player_name]) for player_name in subroster_type["Midfielders"]],
-            defense=[Player.from_dict(team_dict[player_name]) for player_name in subroster_type["Defense"]],
-            goalie=Player.from_dict(team_dict[subroster_type["Goalie"]])
+            forwards=[Player.from_dict(team_dict[playerinfo.name]) for playerinfo in subroster_type["Forwards"]],
+            midfielders=[Player.from_dict(team_dict[playerinfo.name]) for playerinfo in subroster_type["Midfielders"]],
+            defense=[Player.from_dict(team_dict[playerinfo.name]) for playerinfo in subroster_type["Defense"]],
+            goalie=Player.from_dict(team_dict[subroster_type["Goalie"].name])
         )
     
     def update_team_dict(self, new_dict):
