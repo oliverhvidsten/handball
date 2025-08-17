@@ -4,6 +4,8 @@ Description: This file contains code for the Team classes
 Author: Oliver Hvidsten (oliverhvidsten@gmail.com)
 Date: 1/20/2025 10:38AM PST
 """
+from __future__ import annotations
+
 from handball.utils import dict_to_str
 from handball.sheets_handler import SheetHandler
 from handball.players import Player, PlayerInfo
@@ -227,8 +229,33 @@ class TeamInfo():
             
             sheet_handler.update_draft_picks(team_name=self.team_name, edited_data=draft_info)
 
-    def get_updates_from_Team(self):
-        raise NotImplementedError
+    def get_updates_from_Team(self, team_obj:Team):
+        """
+        Get relevant values from Team Objects
+        """
+        for i, player in enumerate(team_obj.starters.forwards):
+            self.starters["Forwards"][i].update_from_Player(player) # type: ignore
+        for i, player in enumerate(team_obj.starters.midfielders):
+            self.starters["Midfielders"][i].update_from_Player(player) # type: ignore
+        for i, player in enumerate(team_obj.starters.defense):
+            self.starters["Defense"][i].update_from_Player(player) # type: ignore
+        self.starters["Goalie"].update_from_Player(team_obj.starters.goalie) # type: ignore
+
+        for i, player in enumerate(team_obj.bench.forwards):
+            self.starters["Forwards"][i].update_from_Player(player) # type: ignore
+        for i, player in enumerate(team_obj.bench.midfielders):
+            self.starters["Midfielders"][i].update_from_Player(player) # type: ignore
+        for i, player in enumerate(team_obj.bench.defense):
+            self.starters["Defense"][i].update_from_Player(player) # type: ignore
+        self.starters["Goalie"].update_from_Player(team_obj.bench.goalie) # type: ignore
+
+        for i, player in enumerate(team_obj.reserves):
+            self.reserve[i].update_from_Player(player)
+
+        self.record = team_obj.record
+
+        # TODO: Should we update draft picks here? Unlikely...
+
 
 
 
@@ -269,7 +296,7 @@ class Team():
     bench: Subroster
     reserves: list # list of player objects
     draft_picks: dict|None # keys: "1st Round" and "2nd Round"
-    record: list # wins, losses, ties
+    record: list[int] # wins, losses, ties
 
     def win(self):
         self.record[0] += 1

@@ -84,8 +84,8 @@ class GameSimulator():
             goalie_reserve = np.random.normal(team_obj.bench.goalie.goalie_skill, team_obj.bench.goalie.variance) * 4
 
             # add goalie stats to these metrics
-            combined_list_off.extend([0,0])
-            combined_list_def.extend([goalie, goalie_reserve])
+            combined_list_off.extend([0,0]) # type: ignore
+            combined_list_def.extend([goalie, goalie_reserve]) # type: ignore
             combined_list = np.array(combined_list_off) + np.array(combined_list_def)
 
             team_obj.update_performances(combined_list)
@@ -240,7 +240,7 @@ class GameSimulator():
                     pass
             else:
                 # Pass the ball
-                if np.random.uniform(0,1) < self.offense_stats["ratio"]:
+                if np.random.uniform(0,1) < self.offense_stats["ratio"]: # type: ignore
                     ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
                     try: # Decrement game clock
                         self.game_clock.decrement(TIME_PER_PASS)

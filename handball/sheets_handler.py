@@ -159,7 +159,7 @@ class SheetHandler:
         for note in new_notes:
             rows.append({"values": [{"note": note}]})
 
-        "A3:F32"
+        
         # Now, format into a request
         requests = [
             {
@@ -168,10 +168,10 @@ class SheetHandler:
                     "fields": "note",
                     "range": {
                         "sheetId": SHEET_ID_NUM[team_name],
-                        "startRowIndex": 3,
+                        "startRowIndex": 7,
                         "endRowIndex": 32,
                         "startColumnIndex": 1,
-                        "endColumnIndex": 6
+                        "endColumnIndex": 2
                     }
                 }
             }

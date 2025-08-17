@@ -369,6 +369,23 @@ class PlayerInfo():
             ])
         
         return self.name, note, stats
+    
+    def from_Player(self, player_obj:Player):
+        """
+        Create PlayerInfo object from Player object
+        """
+
+
+        return PlayerInfo(
+            name=player_obj.name,
+            position=player_obj.position,
+            age=player_obj.age,
+            contract=f"{player_obj.contract_term}/${player_obj.contract_value}",
+            injured=False,
+            offense=player_obj.offense,
+            defense=player_obj.defense,
+            goalie_skill=player_obj.goalie_skill
+        )
 
 
     def update_from_Player(self, player_obj:Player):
