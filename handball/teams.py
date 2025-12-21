@@ -97,10 +97,10 @@ class TeamInfo():
         """
 
         team_info = sheet_handler.get_full_team_values(team_name)
-        player_notes = sheet_handler.get_player_notes(team_name)
+        player_notes, player_names = sheet_handler.get_player_notes(team_name)
         player_notes_dict = dict()
-        for player_name, note in player_notes:
-            if len(player_name) > 1:
+        for note, player_name in zip(player_notes, player_names):
+            if len(player_name) > 1 and player_name not in ["Starters", "Bench", "Reserves"]:
                 player_notes_dict[player_name] = note
 
         if get_draft_picks:

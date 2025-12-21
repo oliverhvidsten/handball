@@ -51,7 +51,7 @@ def test_random_player_attribute():
     Generate a random player. 
     Ensure all attributes exist and remain within required boundaries (if applicable)
     """
-    p = Player.create_new_player("Harry Boxin", 3)
+    p = Player.create_new_player("Harry Boxin", "Forward", 3)
     print(p)
 
     t1 = hasattr(p, "name") and hasattr(p, "age") and hasattr(p, "years_in_league") and hasattr(p, "height") and hasattr(p, "weight") and hasattr(p, "position")

@@ -13,7 +13,7 @@ from handball.constants import TEAM_RANGE, PLAYERS_RANGE, DRAFT_PICKS_RANGE, SHE
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 #SHEET_ID = '1MqfFG71GlBdGwXlEtdgygbcxIjpcpUFi71dfvKr2oYQ'
-SERVICE_ACCOUNT_FILE = './gs_key.json'
+SERVICE_ACCOUNT_FILE = '../gs_key.json'
 
 class SheetHandler:
     def __init__(self, sheet_id):
@@ -148,7 +148,7 @@ class SheetHandler:
 
         Inputs:
             1. team_name (str): The name of the team for which the player notes are being pulled
-            2. new_notes (list): Conains the notes for each player with gaps where there are breaks in the google sheet
+            2. new_notes (list): Contains the notes for each player with gaps where there are breaks in the google sheet
                     -- There are 2 spaces in between the starters and bench and the bench and reserves
 
         Outputs:
