@@ -269,12 +269,12 @@ class TeamInfo():
         self.starters["Goalie"].update_from_Player(team_obj.starters.goalie) # type: ignore
 
         for i, player in enumerate(team_obj.bench.forwards):
-            self.starters["Forwards"][i].update_from_Player(player) # type: ignore
+            self.bench["Forwards"][i].update_from_Player(player) # type: ignore
         for i, player in enumerate(team_obj.bench.midfielders):
-            self.starters["Midfielders"][i].update_from_Player(player) # type: ignore
+            self.bench["Midfielders"][i].update_from_Player(player) # type: ignore
         for i, player in enumerate(team_obj.bench.defense):
-            self.starters["Defense"][i].update_from_Player(player) # type: ignore
-        self.starters["Goalie"].update_from_Player(team_obj.bench.goalie) # type: ignore
+            self.bench["Defense"][i].update_from_Player(player) # type: ignore
+        self.bench["Goalie"].update_from_Player(team_obj.bench.goalie) # type: ignore
 
         for i, player in enumerate(team_obj.reserves):
             self.reserve[i].update_from_Player(player)

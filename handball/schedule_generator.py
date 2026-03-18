@@ -469,6 +469,7 @@ class ScheduleGenerator:
             "seed": self.seed,
             "rivals": self.rivals,
             "schedule": self.schedule,
+            "weeks": self.weeks,
         }
 
     def __str__(self) -> str:

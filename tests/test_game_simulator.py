@@ -155,6 +155,37 @@ class TestGameClock:
         assert GameClock.time_to_str(1800) == "30:00"
         assert GameClock.time_to_str(3659) == "60:59"
 
+    def test_set_time_overwrite(self):
+        """Calling set_time overwrites prior time."""
+        clock = GameClock()
+        clock.set_time(500)
+        clock.set_time(100)
+        assert clock.time_left == 100
+
+    def test_decrement_clamps_to_zero(self):
+        """Decrementing past zero clamps to 0 (then raises)."""
+        clock = GameClock()
+        clock.set_time(3)
+        with pytest.raises(ZeroDivisionError):
+            clock.decrement(100)
+        assert clock.time_left == 0
+
+    def test_time_to_str_with_float(self):
+        """time_to_str casts float to int."""
+        assert GameClock.time_to_str(65.9) == "01:05"
+
+    def test_time_to_str_large_value(self):
+        result = GameClock.time_to_str(7200)
+        assert result == "120:00"
+
+    def test_multiple_decrements(self):
+        clock = GameClock()
+        clock.set_time(100)
+        clock.decrement(30)
+        clock.decrement(30)
+        clock.decrement(30)
+        assert clock.time_left == 10
+
 
 class TestGameSimulator:
     """Test the GameSimulator class"""
@@ -423,6 +454,83 @@ class TestGameSimulator:
             assert goals <= shots, f"{player.name} has more goals ({goals}) than shots ({shots})"
 
 
+    def test_no_tie_allowed_raises(self, sample_team):
+        """When allow_tie=False and the game ties, postgame should raise NotImplementedError."""
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+
+        game = GameSimulator(home_team, away_team, allow_tie=False)
+        game.home_score = 3
+        game.away_score = 3
+        with pytest.raises(NotImplementedError):
+            game.postgame()
+
+    def test_ball_position_starts_at_20(self, sample_team):
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+        game = GameSimulator(home_team, away_team)
+        assert game.ball_position == 20
+
+    def test_game_clock_initialized_to_zero(self, sample_team):
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+        game = GameSimulator(home_team, away_team)
+        assert game.game_clock.time_left == 0
+
+    def test_postgame_home_win(self, sample_team):
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+        game = GameSimulator(home_team, away_team)
+        game.home_score = 5
+        game.away_score = 2
+        game.postgame()
+        assert home_team.record[0] == 1
+        assert away_team.record[1] == 1
+
+    def test_postgame_away_win(self, sample_team):
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+        game = GameSimulator(home_team, away_team)
+        game.home_score = 1
+        game.away_score = 4
+        game.postgame()
+        assert away_team.record[0] == 1
+        assert home_team.record[1] == 1
+
+    def test_postgame_tie_allowed(self, sample_team):
+        home_team = sample_team("Home")
+        away_team = sample_team("Away")
+        game = GameSimulator(home_team, away_team, allow_tie=True)
+        game.home_score = 2
+        game.away_score = 2
+        game.postgame()
+        assert home_team.record[2] == 1
+        assert away_team.record[2] == 1
+
+    def test_bench_players_have_stats_after_game(self, sample_team):
+        """Bench forwards and midfielders should accumulate season log data."""
+        home = sample_team("H")
+        away = sample_team("A")
+        game = GameSimulator(home, away)
+        game.simulate_game()
+        for p in home.bench.forwards + home.bench.midfielders:
+            assert len(p.current_season_log["goals"]) == 1
+            assert len(p.current_season_log["shots_taken"]) == 1
+
+    def test_game_produces_nonzero_score_over_multiple(self, sample_team):
+        """Over 10 games, at least one should have a nonzero score."""
+        any_nonzero = False
+        for _ in range(10):
+            h = sample_team("H")
+            a = sample_team("A")
+            g = GameSimulator(h, a)
+            g.simulate_game()
+            if g.home_score > 0 or g.away_score > 0:
+                any_nonzero = True
+                break
+        assert any_nonzero
+
+
 class TestStatTracker:
     """Test the StatTracker class"""
     
@@ -467,6 +575,70 @@ class TestStatTracker:
         tracker.halftime()
         assert tracker.first_half == False
         assert "--- HALFTIME ---" in tracker.scoring_tracker
+
+    def test_scoring_tracker_starts_empty(self, sample_team):
+        home = sample_team("H")
+        away = sample_team("A")
+        tracker = StatTracker(home, [5.0]*10, away, [5.0]*10)
+        assert tracker.scoring_tracker == []
+
+    def test_get_score_info_contains_team_names(self, sample_team):
+        home = sample_team("Alpha")
+        away = sample_team("Beta")
+        tracker = StatTracker(home, [5.0]*10, away, [5.0]*10)
+        tracker.halftime()
+        info = tracker.get_score_info()
+        assert "Alpha" in info
+        assert "Beta" in info
+        assert "HALFTIME" in info
+        assert "START OF REGULATION" in info
+
+    def test_turnovers_start_at_zero(self, sample_team):
+        home = sample_team("H")
+        away = sample_team("A")
+        tracker = StatTracker(home, [5.0]*10, away, [5.0]*10)
+        assert tracker.home_turnovers == 0
+        assert tracker.away_turnovers == 0
+
+    def test_scorer_likelihood_sums_to_one(self, sample_team):
+        home = sample_team("H")
+        away = sample_team("A")
+        tracker = StatTracker(home, [5.0]*10, away, [5.0]*10)
+        import numpy as np
+        assert np.isclose(tracker.home_scorers_likelihood.sum(), 1.0)
+        assert np.isclose(tracker.away_scorers_likelihood.sum(), 1.0)
+
+    def test_ten_scorers_per_team(self, sample_team):
+        home = sample_team("H")
+        away = sample_team("A")
+        tracker = StatTracker(home, [5.0]*10, away, [5.0]*10)
+        assert len(tracker.home_scorers) == 10
+        assert len(tracker.away_scorers) == 10
+
+
+class TestOddsOfTakingShot:
+    """Test the odds_of_taking_shot helper function."""
+
+    def test_low_position_low_odds(self):
+        from handball.game_simulator import odds_of_taking_shot
+        assert odds_of_taking_shot(0) < 0.01
+
+    def test_high_position_high_odds(self):
+        from handball.game_simulator import odds_of_taking_shot
+        assert odds_of_taking_shot(40) > 0.8
+
+    def test_midpoint(self):
+        from handball.game_simulator import odds_of_taking_shot
+        result = odds_of_taking_shot(34)
+        assert 0.45 < result < 0.55
+
+    def test_monotonically_increasing(self):
+        from handball.game_simulator import odds_of_taking_shot
+        prev = 0
+        for yard in range(0, 41):
+            current = odds_of_taking_shot(yard)
+            assert current >= prev
+            prev = current
 
 
 if __name__ == "__main__":

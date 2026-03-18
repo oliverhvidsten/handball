@@ -220,6 +220,95 @@ class SheetHandler:
             body=body
         ).execute()
 
+    def read_free_agents(self, position):
+        """
+        Read free agent data (cell values + notes) from the Free Agents sheet
+        for a single position group.
+
+        position: one of "Forwards", "Midfielders", "Defenders", "Goalies"
+
+        Returns a list of PlayerInfo objects.
+        """
+        from handball.players import PlayerInfo
+
+        col_map = {
+            "Forwards":    {"value_range": "A3:C500", "name_range": "A3:A500"},
+            "Midfielders": {"value_range": "E3:G500", "name_range": "E3:E500"},
+            "Defenders":   {"value_range": "I3:K500", "name_range": "I3:I500"},
+            "Goalies":     {"value_range": "M3:N500", "name_range": "M3:M500"},
+        }
+        if position not in col_map:
+            raise ValueError(f"Unknown position group '{position}'. "
+                             f"Expected one of {list(col_map.keys())}.")
+
+        cfg = col_map[position]
+
+        # 1) Read cell values (name + stats)
+        values = self.get_team_values("Free Agents", cfg["value_range"])
+
+        # 2) Read cell notes via gridData (notes live on the name column cells)
+        request = self.sheet.get(
+            spreadsheetId=self.sheet_id,
+            ranges=f"Free Agents!{cfg['name_range']}",
+            includeGridData=True,
+        )
+        result = self._execute_with_retries(request, f"read_free_agents({position})")
+        grid_data = result.get("sheets", [])[0].get("data", [])[0]
+        row_data = grid_data.get("rowData", [])
+
+        notes = []
+        for row in row_data:
+            cells = row.get("values", [])
+            note = cells[0].get("note", "") if cells else ""
+            notes.append(note)
+
+        # 3) Combine into PlayerInfo objects
+        players: list[PlayerInfo] = []
+        for i, row in enumerate(values):
+            name = row[0] if len(row) > 0 else ""
+            if not name:
+                continue
+
+            note = notes[i] if i < len(notes) else ""
+            attributes: dict = {}
+            if note:
+                for line in note.split("\n"):
+                    parts = line.split(" ", 1)
+                    if len(parts) != 2:
+                        continue
+                    attr_name = parts[0].lower().rstrip(":")
+                    attr_value = parts[1]
+                    if attr_name == "age":
+                        attr_value = int(attr_value)
+                    elif attr_name == "injured":
+                        attr_value = attr_value.strip().lower() == "true"
+                    attributes[attr_name] = attr_value
+
+            pos = attributes.get("position", position.rstrip("s"))
+            is_goalie = str(pos).lower() == "goalie"
+
+            if is_goalie:
+                offense = 0.1
+                defense = 0.1
+                goalie_skill = float(row[1]) if len(row) > 1 else 0.0
+            else:
+                offense = float(row[1]) if len(row) > 1 else 0.0
+                defense = float(row[2]) if len(row) > 2 else 0.0
+                goalie_skill = 0.1
+
+            players.append(PlayerInfo(
+                name=name,
+                position=str(pos),
+                age=int(attributes.get("age", 0)),
+                contract=str(attributes.get("contract", "")),
+                injured=bool(attributes.get("injured", False)),
+                offense=offense,
+                defense=defense,
+                goalie_skill=goalie_skill,
+            ))
+
+        return players
+
     def write_free_agents(self, free_agents_list, position):
         """ Write free agents to google sheet """
         print(f"writing {len(free_agents_list)} free agents")

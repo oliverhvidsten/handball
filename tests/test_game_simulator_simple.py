@@ -18,39 +18,52 @@ class TestGameClock:
     """Test the GameClock class"""
     
     def test_clock_initialization(self):
-        """Test that clock initializes to 0"""
         clock = GameClock()
         assert clock.time_left == 0
     
     def test_set_time(self):
-        """Test setting the clock time"""
         clock = GameClock()
-        clock.set_time(1800)  # 30 minutes
+        clock.set_time(1800)
         assert clock.time_left == 1800
     
     def test_decrement(self):
-        """Test decrementing the clock"""
         clock = GameClock()
         clock.set_time(100)
         clock.decrement(10)
         assert clock.time_left == 90
     
     def test_decrement_to_zero(self):
-        """Test that clock doesn't go negative and raises error"""
         clock = GameClock()
         clock.set_time(10)
         clock.decrement(5)
         assert clock.time_left == 5
-        # Decrementing to zero will raise ZeroDivisionError (by design)
         with pytest.raises(ZeroDivisionError):
             clock.decrement(10)
     
     def test_time_to_str(self):
-        """Test time string conversion"""
         assert GameClock.time_to_str(0) == "00:00"
         assert GameClock.time_to_str(65) == "01:05"
         assert GameClock.time_to_str(1800) == "30:00"
         assert GameClock.time_to_str(3659) == "60:59"
+
+    def test_decrement_past_zero_clamps(self):
+        """Overshooting sets time_left to 0 then raises."""
+        clock = GameClock()
+        clock.set_time(5)
+        with pytest.raises(ZeroDivisionError):
+            clock.decrement(999)
+        assert clock.time_left == 0
+
+    def test_set_time_resets(self):
+        """Calling set_time twice resets the clock."""
+        clock = GameClock()
+        clock.set_time(500)
+        clock.decrement(100)
+        clock.set_time(200)
+        assert clock.time_left == 200
+
+    def test_time_to_str_float_input(self):
+        assert GameClock.time_to_str(90.7) == "01:30"
 
 
 @pytest.mark.skipif(
