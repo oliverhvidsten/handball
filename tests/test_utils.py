@@ -50,13 +50,6 @@ class TestProbabilityStack:
         ps = ProbabilityStack()
         assert len(ps.backing_array) == 1000
 
-    def test_values_are_random(self):
-        """Two stacks with different seeds should (almost certainly) differ."""
-        ps1 = ProbabilityStack(length=100)
-        ps2 = ProbabilityStack(length=100)
-        vals1 = [ps1.pop() for _ in range(100)]
-        vals2 = [ps2.pop() for _ in range(100)]
-        assert vals1 != vals2 or True  # extremely unlikely to be equal
 
 
 # ======================================================================
