@@ -108,7 +108,7 @@ def create_team(team_name, coach_list, player_list, current_year, sheet_handler)
 
 
     # Save Team Object as a json
-    team_obj.update_team_dict()
+    team_obj.update_team_JSON()
 
     # Write TeamInfo Object to the google sheet
     teaminfo_obj.update_sheet(sheet_handler=sheet_handler)

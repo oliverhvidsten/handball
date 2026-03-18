@@ -6,7 +6,8 @@ Date: 1/20/2025 10:38AM PST
 """
 from __future__ import annotations
 
-from handball.utils import dict_to_str
+from handball.constants import DRAFT_PICKS_RANGE
+from handball.utils import print_roster
 from handball.sheets_handler import SheetHandler
 from handball.players import Player, PlayerInfo
 
@@ -65,25 +66,26 @@ class TeamInfo():
 
     def __str__(self):
 
+        print("look here")
+        print(self.starters.keys())
+
         lines = [
             f"######  {self.team_name.upper()}  ######",
             f"Head Coach: {self.coaches[0]}",
             f"OC: {self.coaches[1]}, DC: {self.coaches[2]}",
             f"",
             f"--- STARTERS ---",
-            dict_to_str(self.starters),
+            print_roster(self.starters),
             f"",
             f"--- BENCH ---",
-            dict_to_str(self.bench),
+            print_roster(self.bench),
             f"",
-            f"--- RESERVES ---",
-            ", ".join([playerinfo.name for playerinfo in self.reserve]),
+            f"--- RESERVES ---" + "".join([f"\n    {playerinfo}" for playerinfo in self.reserve])
         ]
         return "\n".join(lines)
 
     @classmethod
     def from_sheet(cls, sheet_handler:SheetHandler, team_name, get_draft_picks):
-        #TODO: put record and salary information in TeamInfo Object
         """
         Get all of the information for the specified team from the google sheet
 
@@ -95,14 +97,12 @@ class TeamInfo():
         Return:
             (TeamInfo): team object for the specified team
         """
-
         team_info = sheet_handler.get_full_team_values(team_name)
         player_notes, player_names = sheet_handler.get_player_notes(team_name)
         player_notes_dict = dict()
         for note, player_name in zip(player_notes, player_names):
             if len(player_name) > 1 and player_name not in ["Starters", "Bench", "Reserves"]:
                 player_notes_dict[player_name] = note
-
         if get_draft_picks:
             draft_info = sheet_handler.get_draft_picks(team_name)
             draft_picks = {
@@ -166,6 +166,26 @@ class TeamInfo():
             total_salaries=total_salaries,
             raw_data=(team_info, draft_info, player_notes_dict)
         )
+
+    @classmethod
+    def from_empty_sheet(cls, sheet_handler:SheetHandler, team_name:str):
+        """
+        Create a TeamInfo object from an empty sheet
+        """
+        team_info = sheet_handler.get_full_team_values(team_name)
+        draft_info = sheet_handler.get_draft_picks(team_name)
+        player_notes, player_names = sheet_handler.get_player_notes(team_name)
+        player_notes_dict = dict()
+        return cls(
+            team_name=team_name,
+            coaches=["<insert name>"]*3,
+            starters=dict(),
+            bench=dict(),
+            reserve=[],
+            draft_picks=None,
+            record=[0,0,0],
+            total_salaries=0,
+            raw_data=(team_info, draft_info, player_notes_dict))
     
     
     def update_sheet(self, sheet_handler:SheetHandler, update_draft_picks=False):
@@ -204,12 +224,15 @@ class TeamInfo():
             
 
         for i in range(4):
-            team_info[i+26][1:4] = self.reserve[i].name_and_stats()
+            if self.reserve[i].position == "Goalie":
+                team_info[i+26][1:3] = self.reserve[i].name_and_stats(is_goalie=True)
+            else:
+                team_info[i+26][1:4] = self.reserve[i].name_and_stats()
             new_notes[i+21] = self.reserve[i].get_notes()
 
-        team_info[14][1] = self.starters["Goalie"].name_and_stats() # type: ignore
+        team_info[14][1:3] = self.starters["Goalie"].name_and_stats(is_goalie=True) # type: ignore
         new_notes[9] = self.starters["Goalie"].get_notes() # type: ignore
-        team_info[23][1] = self.bench["Goalie"].name_and_stats() # type: ignore
+        team_info[23][1:3] = self.bench["Goalie"].name_and_stats(is_goalie=True) # type: ignore
         new_notes[18] = self.starters["Goalie"].get_notes() # type: ignore
         
         team_info[0][5] = "-".join([str(value) for value in self.record])
@@ -221,6 +244,10 @@ class TeamInfo():
 
         # If requested fill in the draft picks
         if update_draft_picks:
+            # in case of empty draft_info:
+            if len(draft_info) == 0:
+                draft_info = [["", ""]] * len(self.draft_picks["1st Round"])
+            
             for i,first_round in enumerate(self.draft_picks["1st Round"]): # type: ignore
                 draft_info[i][0] = first_round
             
@@ -311,28 +338,117 @@ class Team():
     @classmethod
     def from_TeamInfo(cls, team_info:TeamInfo):
         """ Get Team object from Team Info object """
-        with open(f"datafiles/{team_info.team_name.lower()}.json", "r") as f:
-            team_dict = json.load(f)
+        datafile_path = f"/Users/oliverhvidsten/Documents/handball/handball/datafiles/{team_info.team_name.lower()}.json"
+        try:
+            with open(datafile_path, "r") as f:
+                team_dict = json.load(f)
+        except FileNotFoundError:
+            # Only synthetic/example teams are allowed to be constructed without a
+            # backing JSON datafile. For all "real" teams this is a hard error.
+            if team_info.team_name.upper() not in {"EXAMPLE"}:
+                raise FileNotFoundError(
+                    f"No team data JSON found for '{team_info.team_name}' at '{datafile_path}'. "
+                    "Real teams must have a persisted team_dict; this is a configuration error."
+                )
+
+            # Fallback for synthetic/example teams: synthesize a minimal team_dict
+            # from the PlayerInfo objects. This is intentionally lossy and should
+            # only be used for demo/testing sheets like 'EXAMPLE'.
+            team_dict = {}
+
+            def add_playerinfo(pi):
+                if not hasattr(pi, "name") or not pi.name:
+                    return
+                if pi.name in team_dict:
+                    return
+                # Create a rough Player object from the available PlayerInfo data.
+                # This is primarily used for test/example teams where no JSON exists.
+                base_off = float(getattr(pi, "offense", 1.0))
+                base_def = float(getattr(pi, "defense", 1.0))
+                base_goalie = float(getattr(pi, "goalie_skill", 0.1))
+                player = Player(
+                    name=pi.name,
+                    age=getattr(pi, "age", 25),
+                    years_in_league=0,
+                    height=70,
+                    weight=175,
+                    position=getattr(pi, "position", "Forward"),
+                    offense=base_off,
+                    defense=base_def,
+                    goalie_skill=base_goalie,
+                    max_offense=base_off,
+                    max_defense=base_def,
+                    max_goalie_skill=base_goalie,
+                    variance=0.5,
+                )
+                team_dict[pi.name] = player.to_dict()
+
+            for plist in team_info.starters.values():
+                if isinstance(plist, list):
+                    for pi in plist:
+                        add_playerinfo(pi)
+                else:
+                    add_playerinfo(plist)
+            for plist in team_info.bench.values():
+                if isinstance(plist, list):
+                    for pi in plist:
+                        add_playerinfo(pi)
+                else:
+                    add_playerinfo(plist)
+            for pi in team_info.reserve:
+                add_playerinfo(pi)
+
+        # Build reserve player objects, supporting both PlayerInfo and str entries.
+        reserve_players = []
+        for res in team_info.reserve:
+            if isinstance(res, PlayerInfo):
+                key = res.name
+            else:
+                key = res
+            if key in team_dict:
+                reserve_players.append(Player.from_dict(team_dict[key]))
 
         return cls(
             team_name=team_info.team_name,
             starters=Subroster.from_TeamInfo(team_info.starters, team_dict),
             bench=Subroster.from_TeamInfo(team_info.bench, team_dict),
-            reserves=[Player.from_dict(team_dict[name]) for name in team_info.reserve],
+            reserves=reserve_players,
             draft_picks=team_info.draft_picks, # might be None if TeamInfo did not scrape this data
             record=team_info.record
         )
     
-    def update_team_dict(self):
+    def update_team_JSON(self):
         """ Write data from Team object to JSON"""
-        updated_dict = dict()
-        self.starters.update_team_dict(updated_dict)
-        self.bench.update_team_dict(updated_dict)
+        updated_dict = dict() #create empty dictionary to hold player data
+        self.starters.update_team_dict(updated_dict) #update starters dictionary
+        self.bench.update_team_dict(updated_dict) #update bench dictionary
         for reserve in self.reserves:
-            updated_dict[reserve.name] = reserve.to_dict() 
+            updated_dict[reserve.name] = reserve.to_dict() #update reserve dictionary
 
-        with open(f"datafiles/{self.team_name.lower()}.json", "w") as f:
-            json.dump(updated_dict, f)
+        # Ensure everything is JSON-serializable (cast NumPy scalars, etc.)
+        def _make_json_safe(obj):
+            if isinstance(obj, dict):
+                return {k: _make_json_safe(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_make_json_safe(v) for v in obj]
+            # Handle NumPy scalar types by casting to Python scalars
+            try:
+                import numpy as np  # type: ignore
+                if isinstance(obj, (np.generic,)):
+                    return obj.item()
+            except Exception:
+                pass
+            return obj
+
+        safe_dict = _make_json_safe(updated_dict)
+
+        with open(f"/Users/oliverhvidsten/Documents/handball/handball/datafiles/{self.team_name.lower()}.json", "w") as f: #write to JSON file
+            json.dump(safe_dict, f)
+
+    # Backwards-compatible alias used in some tests
+    def update_team_dict(self):
+        """Alias for update_team_JSON to maintain test compatibility."""
+        self.update_team_JSON()
 
 
     def update_performances(self, performances):

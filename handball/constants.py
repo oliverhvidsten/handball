@@ -69,3 +69,9 @@ STARTER_RANGE = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 BENCH_RANGE = [12, 13, 14, 15, 16, 17, 18]
 RESERVE_RANGE = [21, 22, 23, 24]
 
+free_agents_ranges = {
+    "Forwards": lambda i : f"A3:C{i}",
+    "Midfielders": lambda i : f"E3:G{i}",
+    "Defenders": lambda i : f"I3:K{i}",
+    "Goalies": lambda i : f"M3:N{i}"
+} 

@@ -50,47 +50,78 @@ class GameSimulator():
 
             minutes_list = [STARTER_MINUTES if i < 9 else BENCH_MINUTES for i in range(15)]
 
-            ## Calculate offense stats for each player
-            start_forward_offense = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.starters.forwards] * MAIN_STAT
-            start_middie_offense = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.starters.midfielders] * MIDDIE_STATS
-            start_defense_offense = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.starters.defense] * SECONDARY_STAT
-            bench_forward_offense = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.bench.forwards] * MAIN_STAT
-            bench_middie_offense = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.bench.midfielders] * MIDDIE_STATS
-            bench_defense_offense = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.bench.defense] * SECONDARY_STAT
+            ## Calculate offense stats for each player (weighted by position)
+            # Sample stats for each player
+            start_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.starters.forwards]
+            start_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.starters.midfielders]
+            start_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.starters.defense]
+            bench_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.bench.forwards]
+            bench_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.bench.midfielders]
+            bench_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.bench.defense]
 
-            # Get the stats for just the possible scorers (will be used to assign probability of scoring later on)
-            scorer_stats = [start_forward_offense, start_middie_offense, bench_forward_offense, bench_middie_offense]
-            scorer_stats = [stat for stats in scorer_stats for stat in stats]
+            # Weight each stat by position importance and multiply by minutes played
+            start_forward_offense = [stat * MAIN_STAT for stat in start_forward_offense_raw]
+            start_middie_offense = [stat * MIDDIE_STATS for stat in start_middie_offense_raw]
+            start_defense_offense = [stat * SECONDARY_STAT for stat in start_defense_offense_raw]
+            bench_forward_offense = [stat * MAIN_STAT for stat in bench_forward_offense_raw]
+            bench_middie_offense = [stat * MIDDIE_STATS for stat in bench_middie_offense_raw]
+            bench_defense_offense = [stat * SECONDARY_STAT for stat in bench_defense_offense_raw]
 
-            # Get the offense stat by summing over all stats
-            combined_list_off = [start_forward_offense, start_middie_offense, start_defense_offense, bench_forward_offense, bench_middie_offense, bench_defense_offense]
-            offense = sum(np.array([stat for stats in combined_list_off for stat in stats]) * (np.array(minutes_list) / 60))
+            # Get the Player objects for scorers (forwards and midfielders only)
+            # StatTracker needs Player objects to access .offense attribute
+            scorer_players = (list(team_obj.starters.forwards) + list(team_obj.starters.midfielders) + 
+                            list(team_obj.bench.forwards) + list(team_obj.bench.midfielders))
+            
+            # Get the sampled stats for scorers (for weighting likelihood)
+            scorer_stats = start_forward_offense_raw + start_middie_offense_raw + bench_forward_offense_raw + bench_middie_offense_raw
+
+            # Combine all weighted offensive stats into a single list (one entry per player)
+            all_offense_stats = (start_forward_offense + start_middie_offense + start_defense_offense + 
+                               bench_forward_offense + bench_middie_offense + bench_defense_offense)
+            
+            # Calculate total offense by multiplying each player's weighted stat by their minutes
+            offense = sum(np.array(all_offense_stats) * (np.array(minutes_list) / 60))
 
 
-            ## Calculate defense stats for each player
-            start_forward_defense = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.starters.forwards] * SECONDARY_STAT
-            start_middie_defense = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.starters.midfielders] * MIDDIE_STATS
-            start_defense_defense = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.starters.defense] * MAIN_STAT
-            bench_forward_defense = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.bench.forwards] * SECONDARY_STAT
-            bench_middie_defense = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench.midfielders] * MIDDIE_STATS
-            bench_defense_defense = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench.defense] * MAIN_STAT
+            ## Calculate defense stats for each player (weighted by position)
+            # Sample stats for each player
+            start_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.starters.forwards]
+            start_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.starters.midfielders]
+            start_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.starters.defense]
+            bench_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.bench.forwards]
+            bench_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench.midfielders]
+            bench_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench.defense]
 
-            combined_list_def = [start_forward_defense, start_middie_defense, start_defense_defense, bench_forward_defense, bench_middie_defense, bench_defense_defense]
-            defense = sum(np.array([stat for stats in combined_list_def for stat in stats]) * (np.array(minutes_list) / 60))
+            # Weight each stat by position importance
+            start_forward_defense = [stat * SECONDARY_STAT for stat in start_forward_defense_raw]
+            start_middie_defense = [stat * MIDDIE_STATS for stat in start_middie_defense_raw]
+            start_defense_defense = [stat * MAIN_STAT for stat in start_defense_defense_raw]
+            bench_forward_defense = [stat * SECONDARY_STAT for stat in bench_forward_defense_raw]
+            bench_middie_defense = [stat * MIDDIE_STATS for stat in bench_middie_defense_raw]
+            bench_defense_defense = [stat * MAIN_STAT for stat in bench_defense_defense_raw]
+
+            # Combine all weighted defensive stats into a single list (one entry per player)
+            all_defense_stats = (start_forward_defense + start_middie_defense + start_defense_defense + 
+                               bench_forward_defense + bench_middie_defense + bench_defense_defense)
+            
+            # Calculate total defense by multiplying each player's weighted stat by their minutes
+            defense = sum(np.array(all_defense_stats) * (np.array(minutes_list) / 60))
 
 
             ## Calculate goalies' stats
             goalie = np.random.normal(team_obj.starters.goalie.goalie_skill, team_obj.starters.goalie.variance) * 4
             goalie_reserve = np.random.normal(team_obj.bench.goalie.goalie_skill, team_obj.bench.goalie.variance) * 4
 
-            # add goalie stats to these metrics
-            combined_list_off.extend([0,0]) # type: ignore
-            combined_list_def.extend([goalie, goalie_reserve]) # type: ignore
+            # Build combined performance list (15 non-goalies + 2 goalies = 17 players)
+            # Goalies don't contribute to offense/defense, so their offense contribution is 0
+            combined_list_off = all_offense_stats + [0, 0]
+            combined_list_def = all_defense_stats + [goalie, goalie_reserve]
             combined_list = np.array(combined_list_off) + np.array(combined_list_def)
 
             team_obj.update_performances(combined_list)
 
-            return offense, defense, goalie, goalie_reserve, scorer_stats
+            # Return Player objects for scorers (StatTracker needs to access .offense attribute)
+            return offense, defense, goalie, goalie_reserve, scorer_players
 
         home_offense, home_defense, home_goalie, home_goalie_reserve, home_scorer_stats = calculate_stats(self.home_team)
         away_offense, away_defense, away_goalie, away_goalie_reserve, away_scorer_stats = calculate_stats(self.away_team)
@@ -188,9 +219,9 @@ class GameSimulator():
 
                 # Change who has the ball
                 self.home_posession = not self.home_posession
-                temp = offense_stats
-                offense_stats = defense_stats
-                defense_stats = temp
+                temp = self.offense_stats
+                self.offense_stats = self.defense_stats
+                self.defense_stats = temp
 
                 # Set the position of the ball (if turnover, put at specific location. else, put at the end of the court for an inbound)
                 # we will always be going from 0 -> 40 for ball position.  Dont have one team go 40->0 (too complicated)
@@ -241,7 +272,7 @@ class GameSimulator():
             else:
                 # Pass the ball
                 if np.random.uniform(0,1) < self.offense_stats["ratio"]: # type: ignore
-                    ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
+                    self.ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
                     try: # Decrement game clock
                         self.game_clock.decrement(TIME_PER_PASS)
                     except:
@@ -370,6 +401,7 @@ class GameClock():
     @staticmethod
     def time_to_str(seconds):
         """ Convert seconds (int) to mm:ss format (str)"""
+        seconds = int(seconds)  # Cast to int in case of float
         mm = seconds // 60
         ss = seconds % 60
         return f"{mm:02d}:{ss:02d}"
@@ -391,7 +423,7 @@ class StatTracker():
         self.first_half = True
 
         ## SET UP HOME TEAM INFO
-        self.home_team_name = home_team.name
+        self.home_team_name = home_team.team_name
         self.home_scorers = list(chain(
             home_team.starters.forwards, # 3 players
             home_team.starters.midfielders, # 3 players
@@ -399,10 +431,12 @@ class StatTracker():
             home_team.bench.midfielders, # 2 players
             ))
         
-        # Weight by the minutes played and overall contribution to the offense
-        self.home_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * np.array(home_scorer_stats)
+        # Weight by the minutes played and overall contribution to the offense.
+        # Use the offense values from the Player objects on the team, so this
+        # works whether the caller passes in Player objects or simple ratings.
+        home_scorer_offense_values = np.array([player.offense for player in self.home_scorers])
+        self.home_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * home_scorer_offense_values
         self.home_scorers_likelihood = self.home_scorers_likelihood / sum(self.home_scorers_likelihood)
-        self.home_scorers_stats = home_scorer_stats
 
         self.home_goals = np.array([0]*10)
         self.home_shots = np.array([0]*10)
@@ -412,7 +446,7 @@ class StatTracker():
 
 
         ## SET UP AWAY TEAM INFO
-        self.away_team_name = away_team.name
+        self.away_team_name = away_team.team_name
         self.away_scorers = list(chain(
             away_team.starters.forwards, # 3 players
             away_team.starters.midfielders, # 3 players
@@ -420,10 +454,11 @@ class StatTracker():
             away_team.bench.midfielders, # 2 players
             ))
         
-        # Weight by the minutes played and overall contribution to the offense
-        self.away_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * np.array(away_scorer_stats)
+        # Weight by the minutes played and overall contribution to the offense.
+        # Use the offense values from the Player objects on the team.
+        away_scorer_offense_values = np.array([player.offense for player in self.away_scorers])
+        self.away_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * away_scorer_offense_values
         self.away_scorers_likelihood = self.away_scorers_likelihood / sum(self.away_scorers_likelihood)
-        self.away_scorers_stats = away_scorer_stats
 
         self.away_goals = np.array([0]*10)
         self.away_shots = np.array([0]*10)
@@ -451,7 +486,6 @@ class StatTracker():
         if home_posession:
             scorers = self.home_scorers
             likelihood = self.home_scorers_likelihood
-            scorers_stats = self.home_scorers_stats
             goals = self.home_goals
             shots = self.home_shots
             off_recov = self.home_off_recov
@@ -459,20 +493,19 @@ class StatTracker():
         else:
             scorers = self.away_scorers
             likelihood = self.away_scorers_likelihood
-            scorers_stats = self.away_scorers_stats
             goals = self.away_goals
             shots = self.away_shots
             off_recov = self.away_off_recov
             team_name = self.away_team_name
 
         # Who shot the ball
-        idx = np.random.choice(np.arange(len(scorers)), likelihood)
+        idx = np.random.choice(np.arange(len(scorers)), p=likelihood)
         shots[idx] += 1
 
-        if prob_stack.pop() < scorers_stats[idx].offense * np.exp(-K * (40-ball_position)): # If shot was taken, was it on goal?
+        if prob_stack.pop() < scorers[idx].offense * np.exp(-K * (40-ball_position)): # If shot was taken, was it on goal?
             # Shot taken was on goal
             # Evaluate the result of the shot (weight the offense of the scorer more)
-            if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers_stats[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
+            if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
                 scored = True
                 goals[idx] += 1
                 self.scoring_tracker.append(

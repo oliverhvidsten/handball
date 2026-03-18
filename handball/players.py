@@ -22,7 +22,7 @@ Non-Exhaustive List of Player attributes
 
 """
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 from handball.simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES, STAT_GEN
@@ -111,45 +111,56 @@ class Player():
     max_defense: float
     max_goalie_skill: float
     variance: float
+    # Aging and decline parameters. These have sensible defaults so that older
+    # saved data and tests that construct Player directly remain valid.
+    peak_age: int = 27
+    decline_age: int = 30
+    decline_rate: float = 0.15
 
-    is_injured: bool
-    injury_risk: float
-    injury_log: InjuryReport
+    is_injured: bool = False
+    injury_risk: float = 0.001
+    injury_log: InjuryReport = field(default_factory=lambda: InjuryReport(active_injury=False, injuries=list()))
 
-    contract_term: int
-    contract_value: int
-    years_remaining: int
-    amount_paid: int
-    rookie_contract: bool
-    restricted_free_agent: bool
+    contract_term: int = 0
+    contract_value: int = 0
+    years_remaining: int = 0
+    amount_paid: int = 0
+    rookie_contract: bool = True
+    restricted_free_agent: bool = True
 
-    awards_won: list
+    awards_won: list = field(default_factory=list)
 
-    current_season_log: dict
+    current_season_log: dict = field(default_factory=lambda: {
+        "shots_taken": [],
+        "goals": [],
+        "performances": [],
+    })
 
     @classmethod
-    def create_new_player(cls, name, position, humor):
+    def create_new_player(cls, name, position, rating):
         """
         Create a player for the draft. This player not previously been in the league
-        Take in player name and relevant humor
+        Take in player name and rating
         """
         stats = dict()
         #Biographical
         stats["name"] = name
-        stats["age"] = random.uniform(18,23)
+        stats["age"] = int(random.uniform(18,23))
+
         #stats["years_in_league"] = max(0, round(stats["age"] - random.uniform(18,21)))
         stats["years_in_league"] = 0
-        stats["height"] = random.normalvariate(71, 2)
-        stats["weight"] = random.normalvariate(175, 15)
+        stats["height"] = int(round(random.normalvariate(71, 2)))
+        stats["weight"] = int(round(random.normalvariate(175, 15)))
 
 
         # Get overall score
-        overall = max(0, random.normalvariate(*STAT_GEN[humor]))
+        overall = max(0, random.normalvariate(*STAT_GEN[rating]))
 
         def split_rating(overall, is_midfielder):
             """
             Split the overall score into individual scores
             """
+            # Midfielders should have lower difference between offense and defense scores
             if is_midfielder:
                 std = 0.5
             else:
@@ -159,10 +170,12 @@ class Player():
             second_score = (2*overall) - first_score
             scores = [first_score, second_score]
 
+            # Offense and defense scores are randomized for midfielders
+            # For forwards and defenders, higher score is assigend to main stat
             if is_midfielder:
                 random.shuffle(scores)
             else:
-                scores.sort()
+                scores.sort(reverse=True)
 
             return scores[0], scores[1]
 
@@ -173,29 +186,41 @@ class Player():
                 offense, defense = 0.1, 0.1
                 goalie_skill = overall
             case "Defense":
-                defense, offense, = split_rating(overall, False)
+                defense, offense, = split_rating(overall, is_midfielder=False)
                 goalie_skill = 0.1
             case "Forward":
-                offense, defense, = split_rating(overall, False)
+                offense, defense, = split_rating(overall, is_midfielder=False)
                 goalie_skill = 0.1
             case "Midfielder":
-                offense, defense, = split_rating(overall, True)
+                offense, defense, = split_rating(overall, is_midfielder=True)
                 goalie_skill = 0.1
                 
 
         # assign all stats, put a hard cap at skill level == 10
         # Max scores can exceed 10 as this will affect the growth rate of the players
         # - Though the player will in practice never get to exceed 10
-        stats["offense"] = min(10, offense)
-        stats["defense"] = min(10, defense)
-        stats["goalie_skill"] = min(10, goalie_skill)
+        stats["offense"] = min(10.0, offense)
+        stats["defense"] = min(10.0, defense)
+        stats["goalie_skill"] = min(10.0, goalie_skill)
 
-        stats["max_offense"] = max(offense, offense + random.normalvariate(2.5, 0.75))
-        stats["max_defense"] = max(defense, defense + random.normalvariate(2.5, 0.75))
-        stats["max_goalie_skill"] = min(10, max(goalie_skill, goalie_skill + random.normalvariate(2.5, 0.75)))
+        stats["max_offense"] = max(offense, offense + random.normalvariate(2, 0.75))
+        stats["max_defense"] = max(defense, defense + random.normalvariate(2, 0.75))
+        stats["max_goalie_skill"] = min(10.0, max(goalie_skill, goalie_skill + random.normalvariate(2, 0.75)))
+
+        if position == "Goalie":
+            stats["max_offense"] = 0.1
+            stats["max_defense"] = 0.1
+        else:
+            stats["max_goalie_skill"] = 0.1
+
 
         stats["variance"] = max(0, random.normalvariate(0.5, 0.5))
+        stats["decline_rate"] = max(0.01, random.normalvariate(0.15, 0.1))
+
+        stats["peak_age"] = int(random.normalvariate(25, sigma=1))
+        stats["decline_age"] = stats["peak_age"] + int(random.uniform(1, 4))
         
+
         #Injury
         stats["is_injured"] = False
         stats["injury_risk"] = max(0.0005, random.normalvariate(0.001, 0.001))
@@ -219,7 +244,12 @@ class Player():
         }
         stats["awards_won"] = []
 
-        return cls(**stats)
+        player = cls(**stats)
+
+        # if the player is above 18, boost their stats a bit
+        player.update_stats(player.age-18, rate_scale=0.25)
+
+        return player
     
     def __eq__(self, otherPlayer):
         """
@@ -264,6 +294,9 @@ class Player():
             "max_defense": self.max_defense,
             "max_goalie_skill": self.max_goalie_skill,
             "variance": self.variance,
+            "decline_rate": self.decline_rate,
+            "peak_age": self.peak_age,
+            "decline_age": self.decline_age,
             "is_injured": self.is_injured,
             "injury_risk": self.injury_risk,
             "injury_log": self.injury_log.to_dict(),
@@ -285,10 +318,15 @@ class Player():
 
 
     def advance_year(self):
-        """ update information when year is advanced """
+        """ 
+        update information and stats when year is advanced 
+        new_year (int): The upcoming season
+        """
+        self.update_stats(years=1, rate_scale=1) # increment stats by 1 year with no rate scaling
         self.age += 1
         self.years_in_league += 1
         self.years_remaining -= 1
+
     
     def injure(self, year, injury_type, current_game):
         """ injure player """
@@ -297,6 +335,56 @@ class Player():
         self.injury_log.add(year, injury_type, current_game)
         ###Injury type and duration###############
 
+    def update_contract(self, contract_term, contract_salary, rookie):
+        """ Set contract information """
+        self.contract_term = contract_term
+        self.contract_value = contract_salary
+
+        if not rookie:
+            self.rookie_contract = False
+            self.restricted_free_agent = False
+
+
+    def update_stats(self, years:int, rate_scale:float):
+        """
+        Update the player's stats going into next season (Note: age has not been incremented)
+        This should be based off of a few things: 
+            - General Progression (upwards until peak, noisy until decline age)
+
+            TODO: Potential Future Items
+            - Injuries Slow Progression
+            - Starting Positions bolster progression, Reserver Positions hinder progression
+        
+        years (int): number of years to increment the stats by
+        rate_scale (float): apply a scaling factor to the amount of progression made
+        """
+
+        # If younger than peak age, apply linear progression between current stats at max stats 
+        # If at peak age but not going to hit decline age, apply random noise
+        # If going to hit decline age or older, apply decline rate
+
+        if (self.age < self.peak_age):
+            offense_slope = (self.max_offense - self.offense)/(self.peak_age - self.age)
+            defense_slope = (self.max_defense - self.defense)/(self.peak_age - self.age)
+            goalie_slope = (self.max_goalie_skill - self.goalie_skill)/(self.peak_age - self.age)
+
+            self.offense = min(10.0,self.offense + (offense_slope * years * rate_scale))
+            self.defense = min(10.0, self.defense + (defense_slope * years * rate_scale))
+            self.goalie_skill = min(10.0, self.goalie_skill + (goalie_slope * years * rate_scale))
+
+        elif (self.age >= self.peak_age) and (self.age < self.decline_age - 1):
+            if self.position != "Goalie":
+                self.offense = min(10.0, self.offense + (random.normalvariate(0.0, 0.25) * rate_scale))
+                self.defense = min(10.0, self.defense + (random.normalvariate(0.0, 0.25) * rate_scale))
+            else:
+                self.goalie_skill = min(10.0, self.goalie_skill + (random.normalvariate(0.0, 0.25) * rate_scale))
+        else:
+            if self.position == "Goalie":
+                self.goalie_skill = self.goalie_skill * (1 - self.decline_rate)
+            else:
+                self.offense = min(10.0, self.offense * (1 - self.decline_rate)) # TODO: apply rate scale to decline
+                self.defense = min(10.0, self.defense * (1 - self.decline_rate)) # TODO: apply rate scale to decline
+    
     @property
     def total_season_goals(self):
         return sum(self.current_season_log["goals"])
@@ -320,6 +408,16 @@ class PlayerInfo():
     defense: float
     goalie_skill: float
 
+    def __str__(self):
+        return f"{self.name} (pos={self.position}, age={self.age}, contract={self.contract}, injured={self.injured})"
+    def __repr__(self):
+        return self.__str__()
+    def __eq__(self, other):
+        if not isinstance(other, PlayerInfo):
+            return False
+        return self.name == other.name and self.position == other.position and self.age == other.age and self.contract == other.contract and self.injured == other.injured and self.offense == other.offense and self.defense == other.defense and self.goalie_skill == other.goalie_skill
+    def __hash__(self):
+        return hash((self.name, self.position, self.age, self.contract, self.injured, self.offense, self.defense, self.goalie_skill))
 
     @classmethod
     def from_sheet(cls, sheet_row:list, notes_dict:dict):
@@ -335,7 +433,7 @@ class PlayerInfo():
         lines = note.split("\n")
         attributes = dict()
         for line in lines:
-            attr_name, attr_value = line.lower().split()
+            attr_name, attr_value = line.lower().split(" ", 1) # split on first space
 
             if attr_name[:-1] in ["age"]: # attributes to be casted to int
                 attr_value = int(attr_value)
@@ -344,7 +442,7 @@ class PlayerInfo():
             attributes[attr_name[:-1]] = attr_value
 
         # Assign stats (given position information)
-        if attributes["position"] == "goalie":
+        if attributes["position"].lower() == "goalie":
             attributes["offense"] = 0.1
             attributes["defense"] = 0.1
             attributes["goalie_skill"] = sheet_row[2]
@@ -370,7 +468,8 @@ class PlayerInfo():
         
         return self.name, note, stats
     
-    def from_Player(self, player_obj:Player):
+    @classmethod
+    def from_Player(cls, player_obj:Player):
         """
         Create PlayerInfo object from Player object
         """
@@ -380,8 +479,9 @@ class PlayerInfo():
             name=player_obj.name,
             position=player_obj.position,
             age=player_obj.age,
-            contract=f"{player_obj.contract_term}/${player_obj.contract_value}",
-            injured=False,
+            contract=
+            f"{player_obj.contract_term}/${player_obj.contract_value}{' (R)' if player_obj.rookie_contract else ''}",
+            injured=player_obj.is_injured,
             offense=player_obj.offense,
             defense=player_obj.defense,
             goalie_skill=player_obj.goalie_skill
@@ -405,9 +505,9 @@ class PlayerInfo():
         Return the player's name and stats
         """
         if is_goalie:
-            return [self.name, self.goalie_skill]
+            return [self.name, round(self.goalie_skill, 2)]
         else:
-            return [self.name, self.offense, self.defense]
+            return [self.name, round(self.offense, 2), round(self.defense, 2)]
         
     def get_notes(self):
         return"\n".join([
