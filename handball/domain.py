@@ -354,6 +354,70 @@ class Team:
         else:
             raise ValueError(f"unknown outcome {outcome!r}")
 
+    # -- per-game stat writes (consumed by the game simulator) -------------
+    # The scorer index order is fixed: starters Forward/Midfielder/Defense,
+    # then bench Forward/Midfielder/Defense, then the two goalies. numpy scalars
+    # are cast to plain int/float so results stay JSON-serializable.
+    def update_performances(self, performances) -> None:
+        """Append each player's game performance to their season log; reserves
+        (who do not play) get a 0."""
+        s, b = self.starters, self.bench
+        for i, perf in enumerate(performances):
+            if i < 3:
+                tgt = s["Forward"][i]
+            elif i < 6:
+                tgt = s["Midfielder"][i - 3]
+            elif i < 9:
+                tgt = s["Defense"][i - 6]
+            elif i < 11:
+                tgt = b["Forward"][i - 9]
+            elif i < 13:
+                tgt = b["Midfielder"][i - 11]
+            elif i < 15:
+                tgt = b["Defense"][i - 13]
+            elif i == 15:
+                tgt = s["Goalie"][0]
+            else:
+                tgt = b["Goalie"][0]
+            tgt.current_season_log["performances"].append(float(perf))
+        for reserve in self.reserves:
+            reserve.current_season_log["performances"].append(0)
+
+    def update_offensive_stats(self, goals_scored, shots_taken) -> None:
+        """Record goals/shots for eligible scorers (starter Forward/Midfielder,
+        bench Forward/Midfielder); everyone else gets an explicit 0 so every
+        player has exactly one entry per game."""
+        s, b = self.starters, self.bench
+        for i, (goals, shots) in enumerate(zip(goals_scored, shots_taken)):
+            if i < 3:
+                tgt = s["Forward"][i]
+            elif i < 6:
+                tgt = s["Midfielder"][i - 3]
+            elif i < 8:
+                tgt = b["Forward"][i - 6]
+            else:
+                tgt = b["Midfielder"][i - 8]
+            tgt.current_season_log["goals"].append(int(goals))
+            tgt.current_season_log["shots_taken"].append(int(shots))
+
+        non_scorers = (
+            list(s["Defense"]) + list(b["Defense"])
+            + [s["Goalie"][0], b["Goalie"][0]] + list(self.reserves)
+        )
+        for p in non_scorers:
+            p.current_season_log["goals"].append(0)
+            p.current_season_log["shots_taken"].append(0)
+
+    def update_goalie_stats(self, saves: int, goals_allowed: int) -> None:
+        """Both goalies play (halftime swap): split 60% starter / 40% bench."""
+        saves, goals_allowed = int(saves), int(goals_allowed)
+        starter_saves = int(round(saves * 0.6))
+        starter_ga = int(round(goals_allowed * 0.6))
+        self.starters["Goalie"][0].current_season_log["saves"].append(starter_saves)
+        self.starters["Goalie"][0].current_season_log["goals_allowed"].append(starter_ga)
+        self.bench["Goalie"][0].current_season_log["saves"].append(saves - starter_saves)
+        self.bench["Goalie"][0].current_season_log["goals_allowed"].append(goals_allowed - starter_ga)
+
     # -- the one write path for roster layout ------------------------------
     def apply_arrangement(self, arr: TeamArrangement, rules: RosterRules = DEFAULT_RULES) -> None:
         """Reorder/retier existing players to match `arr`. Validates first and

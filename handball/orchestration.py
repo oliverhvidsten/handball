@@ -88,20 +88,18 @@ class SimpleGameEngine:
 
 class GameSimulatorAdapter:
     """Production GameEngine: runs the real handball.game_simulator.GameSimulator
-    on domain.Team via the TeamView compatibility facade, then maps
-    get_game_summary() -> GameResult.
+    directly on domain.Team, then maps get_game_summary() -> GameResult.
 
-    Imports are lazy so constructing the orchestrator with a different engine
+    The import is lazy so constructing the orchestrator with a different engine
     (e.g. SimpleGameEngine) never pulls in the simulator / its deps."""
 
     def __init__(self, allow_tie: bool = False):
         self.allow_tie = allow_tie
 
     def play(self, home: Team, away: Team) -> GameResult:
-        from handball.game_compat import TeamView
         from handball.game_simulator import GameSimulator
 
-        sim = GameSimulator(TeamView(home), TeamView(away), allow_tie=self.allow_tie)
+        sim = GameSimulator(home, away, allow_tie=self.allow_tie)
         sim.simulate_game()           # runs the game and calls postgame()
         s = sim.get_game_summary()
 

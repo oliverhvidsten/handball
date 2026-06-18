@@ -1,7 +1,7 @@
 """
-Proof of the cutover: the REAL GameSimulator runs on domain.Team via
-GameSimulatorAdapter / TeamView -- no sheet, no credentials. Records and
-per-player season logs land on the domain model.
+Proof of the cutover: the REAL GameSimulator runs directly on domain.Team via
+GameSimulatorAdapter -- no sheet, no credentials. Records and per-player season
+logs land on the domain model.
 
 `pytest tests/test_game_adapter.py` or `python tests/test_game_adapter.py`.
 """

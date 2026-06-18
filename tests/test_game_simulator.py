@@ -6,113 +6,11 @@ Date: 3/1/2026
 """
 import pytest
 import json
-from dataclasses import dataclass
 
 from handball.game_simulator import GameSimulator, GameClock, StatTracker
-from handball.domain import Player
+from handball.domain import Player, Team
 from handball.players import InjuryReport
 from handball.simulation_vars import REGULATION_TIME
-
-
-# --- Test doubles -----------------------------------------------------------
-# GameSimulator only needs the structural team surface (see game_simulator.Team
-# Protocol). These doubles reproduce the now-removed legacy teams.Subroster /
-# teams.Team behavior the simulator was written against, so these unit tests can
-# exercise the simulator's internals without the deleted legacy module. The
-# production v2 path is covered separately by test_game_adapter.py (domain.Team
-# via game_compat.TeamView).
-@dataclass
-class Subroster:
-    forwards: list
-    midfielders: list
-    defense: list
-    goalie: Player
-
-
-@dataclass
-class Team:
-    team_name: str
-    starters: Subroster
-    bench: Subroster
-    reserves: list
-    draft_picks: dict | None
-    record: list  # [wins, losses, ties]
-
-    def win(self):
-        self.record[0] += 1
-
-    def lose(self):
-        self.record[1] += 1
-
-    def tie(self):
-        self.record[2] += 1
-
-    def update_performances(self, performances):
-        """Add the individual game performances to the players' objects."""
-        for i, performance in enumerate(performances):
-            if i < 3:
-                self.starters.forwards[i].current_season_log["performances"].append(performance)
-            elif i < 6:
-                self.starters.midfielders[i-3].current_season_log["performances"].append(performance)
-            elif i < 9:
-                self.starters.defense[i-6].current_season_log["performances"].append(performance)
-            elif i < 11:
-                self.bench.forwards[i-9].current_season_log["performances"].append(performance)
-            elif i < 13:
-                self.bench.midfielders[i-11].current_season_log["performances"].append(performance)
-            elif i < 15:
-                self.bench.defense[i-13].current_season_log["performances"].append(performance)
-            elif i == 15:
-                self.starters.goalie.current_season_log["performances"].append(performance)
-            else:
-                self.bench.goalie.current_season_log["performances"].append(performance)
-        for reserve in self.reserves:
-            reserve.current_season_log["performances"].append(0)
-
-    def update_offensive_stats(self, goals_scored, shots_taken):
-        """Record goals/shots for eligible scorers; 0 for everyone else."""
-        for i, (goals, shots) in enumerate(zip(goals_scored, shots_taken)):
-            if i < 3:
-                self.starters.forwards[i].current_season_log["goals"].append(goals)
-                self.starters.forwards[i].current_season_log["shots_taken"].append(shots)
-            elif i < 6:
-                self.starters.midfielders[i-3].current_season_log["goals"].append(goals)
-                self.starters.midfielders[i-3].current_season_log["shots_taken"].append(shots)
-            elif i < 8:
-                self.bench.forwards[i-6].current_season_log["goals"].append(goals)
-                self.bench.forwards[i-6].current_season_log["shots_taken"].append(shots)
-            else:
-                self.bench.midfielders[i-8].current_season_log["goals"].append(goals)
-                self.bench.midfielders[i-8].current_season_log["shots_taken"].append(shots)
-
-        for defender in self.starters.defense:
-            defender.current_season_log["goals"].append(0)
-            defender.current_season_log["shots_taken"].append(0)
-        for defender in self.bench.defense:
-            defender.current_season_log["goals"].append(0)
-            defender.current_season_log["shots_taken"].append(0)
-
-        self.starters.goalie.current_season_log["goals"].append(0)
-        self.starters.goalie.current_season_log["shots_taken"].append(0)
-        self.bench.goalie.current_season_log["goals"].append(0)
-        self.bench.goalie.current_season_log["shots_taken"].append(0)
-
-        for reserve in self.reserves:
-            reserve.current_season_log["goals"].append(0)
-            reserve.current_season_log["shots_taken"].append(0)
-
-    def update_goalie_stats(self, saves: int, goals_allowed: int):
-        """Split goalie stats 60/40 between starter and bench (halftime swap)."""
-        starter_saves = int(round(saves * 0.6))
-        bench_saves = saves - starter_saves
-        starter_goals_allowed = int(round(goals_allowed * 0.6))
-        bench_goals_allowed = goals_allowed - starter_goals_allowed
-
-        self.starters.goalie.current_season_log["saves"].append(starter_saves)
-        self.starters.goalie.current_season_log["goals_allowed"].append(starter_goals_allowed)
-        self.bench.goalie.current_season_log["saves"].append(bench_saves)
-        self.bench.goalie.current_season_log["goals_allowed"].append(bench_goals_allowed)
-# ----------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -169,48 +67,48 @@ def sample_team(sample_player, sample_goalie):
     """Create a sample team for testing"""
     def _make_team(team_name, offense_boost=0, defense_boost=0):
         return Team(
-            team_name=team_name,
-            starters=Subroster(
-                forwards=[
+            id=team_name,
+            name=team_name,
+            coaches=["HC", "OC", "DC"],
+            starters={
+                "Forward": [
                     sample_player(f"{team_name} Forward 1", "Forward", offense=5.0+offense_boost, defense=3.0+defense_boost),
                     sample_player(f"{team_name} Forward 2", "Forward", offense=5.5+offense_boost, defense=2.5+defense_boost),
-                    sample_player(f"{team_name} Forward 3", "Forward", offense=4.5+offense_boost, defense=3.5+defense_boost)
+                    sample_player(f"{team_name} Forward 3", "Forward", offense=4.5+offense_boost, defense=3.5+defense_boost),
                 ],
-                midfielders=[
+                "Midfielder": [
                     sample_player(f"{team_name} Midfielder 1", "Midfielder", offense=4.0+offense_boost, defense=4.0+defense_boost),
                     sample_player(f"{team_name} Midfielder 2", "Midfielder", offense=4.5+offense_boost, defense=4.5+defense_boost),
-                    sample_player(f"{team_name} Midfielder 3", "Midfielder", offense=3.5+offense_boost, defense=3.5+defense_boost)
+                    sample_player(f"{team_name} Midfielder 3", "Midfielder", offense=3.5+offense_boost, defense=3.5+defense_boost),
                 ],
-                defense=[
+                "Defense": [
                     sample_player(f"{team_name} Defense 1", "Defense", offense=2.0+offense_boost, defense=6.0+defense_boost),
                     sample_player(f"{team_name} Defense 2", "Defense", offense=2.5+offense_boost, defense=5.5+defense_boost),
-                    sample_player(f"{team_name} Defense 3", "Defense", offense=3.0+offense_boost, defense=5.0+defense_boost)
+                    sample_player(f"{team_name} Defense 3", "Defense", offense=3.0+offense_boost, defense=5.0+defense_boost),
                 ],
-                goalie=sample_goalie
-            ),
-            bench=Subroster(
-                forwards=[
+                "Goalie": [sample_goalie],
+            },
+            bench={
+                "Forward": [
                     sample_player(f"{team_name} Bench Forward 1", "Forward", offense=4.0+offense_boost, defense=2.0+defense_boost),
-                    sample_player(f"{team_name} Bench Forward 2", "Forward", offense=3.5+offense_boost, defense=2.5+defense_boost)
+                    sample_player(f"{team_name} Bench Forward 2", "Forward", offense=3.5+offense_boost, defense=2.5+defense_boost),
                 ],
-                midfielders=[
+                "Midfielder": [
                     sample_player(f"{team_name} Bench Midfielder 1", "Midfielder", offense=3.0+offense_boost, defense=3.0+defense_boost),
-                    sample_player(f"{team_name} Bench Midfielder 2", "Midfielder", offense=3.5+offense_boost, defense=3.5+defense_boost)
+                    sample_player(f"{team_name} Bench Midfielder 2", "Midfielder", offense=3.5+offense_boost, defense=3.5+defense_boost),
                 ],
-                defense=[
+                "Defense": [
                     sample_player(f"{team_name} Bench Defense 1", "Defense", offense=2.0+offense_boost, defense=4.0+defense_boost),
-                    sample_player(f"{team_name} Bench Defense 2", "Defense", offense=1.5+offense_boost, defense=4.5+defense_boost)
+                    sample_player(f"{team_name} Bench Defense 2", "Defense", offense=1.5+offense_boost, defense=4.5+defense_boost),
                 ],
-                goalie=sample_player(f"{team_name} Backup Goalie", "Goalie", offense=0.1, defense=0.1, goalie_skill=5.0)
-            ),
+                "Goalie": [sample_player(f"{team_name} Backup Goalie", "Goalie", offense=0.1, defense=0.1, goalie_skill=5.0)],
+            },
             reserves=[
                 sample_player(f"{team_name} Reserve 1", "Forward", offense=2.0, defense=2.0),
                 sample_player(f"{team_name} Reserve 2", "Midfielder", offense=2.0, defense=2.0),
                 sample_player(f"{team_name} Reserve 3", "Defense", offense=1.0, defense=3.0),
-                sample_player(f"{team_name} Reserve 4", "Goalie", offense=0.1, defense=0.1, goalie_skill=3.0)
+                sample_player(f"{team_name} Reserve 4", "Goalie", offense=0.1, defense=0.1, goalie_skill=3.0),
             ],
-            draft_picks={"1st Round": [], "2nd Round": []},
-            record=[0, 0, 0]
         )
     return _make_team
 
@@ -303,8 +201,8 @@ class TestGameSimulator:
         
         game = GameSimulator(home_team, away_team)
         
-        assert game.home_team.team_name == "Home"
-        assert game.away_team.team_name == "Away"
+        assert game.home_team.id == "Home"
+        assert game.away_team.id == "Away"
         assert game.home_score == 0
         assert game.away_score == 0
         assert game.allow_tie == False  # Default is now False (games go to overtime)
@@ -339,8 +237,8 @@ class TestGameSimulator:
         home_team = sample_team("Home")
         away_team = sample_team("Away")
         
-        initial_home_record = home_team.record.copy()
-        initial_away_record = away_team.record.copy()
+        initial_home_record = home_team.record
+        initial_away_record = away_team.record
         
         game = GameSimulator(home_team, away_team)
         game.simulate_game()
@@ -361,8 +259,8 @@ class TestGameSimulator:
         # Run multiple games to ensure home team wins at least once
         home_wins = 0
         for _ in range(5):
-            home_team.record = [0, 0, 0]
-            away_team.record = [0, 0, 0]
+            home_team.record = (0, 0, 0)
+            away_team.record = (0, 0, 0)
             
             game = GameSimulator(home_team, away_team)
             game.simulate_game()
@@ -384,8 +282,8 @@ class TestGameSimulator:
         # Run multiple games to ensure away team wins at least once
         away_wins = 0
         for _ in range(5):
-            home_team.record = [0, 0, 0]
-            away_team.record = [0, 0, 0]
+            home_team.record = (0, 0, 0)
+            away_team.record = (0, 0, 0)
             
             game = GameSimulator(home_team, away_team)
             game.simulate_game()
@@ -407,8 +305,8 @@ class TestGameSimulator:
         # Run multiple games to try to get a tie
         ties = 0
         for _ in range(20):
-            home_team.record = [0, 0, 0]
-            away_team.record = [0, 0, 0]
+            home_team.record = (0, 0, 0)
+            away_team.record = (0, 0, 0)
             
             game = GameSimulator(home_team, away_team, allow_tie=True)
             game.simulate_game()
@@ -429,7 +327,7 @@ class TestGameSimulator:
         away_team = sample_team("Away")
         
         # Check initial state - all players should have empty logs
-        for player in home_team.starters.forwards:
+        for player in home_team.starters["Forward"]:
             assert len(player.current_season_log["goals"]) == 0
             assert len(player.current_season_log["shots_taken"]) == 0
             assert len(player.current_season_log["performances"]) == 0
@@ -438,12 +336,12 @@ class TestGameSimulator:
         game.simulate_game()
         
         # After game, all starters should have exactly 1 entry in their logs
-        for player in home_team.starters.forwards:
+        for player in home_team.starters["Forward"]:
             assert len(player.current_season_log["goals"]) == 1
             assert len(player.current_season_log["shots_taken"]) == 1
             assert len(player.current_season_log["performances"]) == 1
         
-        for player in home_team.starters.midfielders:
+        for player in home_team.starters["Midfielder"]:
             assert len(player.current_season_log["goals"]) == 1
             assert len(player.current_season_log["shots_taken"]) == 1
             assert len(player.current_season_log["performances"]) == 1
@@ -460,11 +358,11 @@ class TestGameSimulator:
         # Check if any offensive player scored
         total_forward_goals = sum([
             sum(p.current_season_log["goals"]) 
-            for p in home_team.starters.forwards
+            for p in home_team.starters["Forward"]
         ])
         total_middie_goals = sum([
             sum(p.current_season_log["goals"]) 
-            for p in home_team.starters.midfielders
+            for p in home_team.starters["Midfielder"]
         ])
         
         # With such high offense, at least someone should score
@@ -479,12 +377,12 @@ class TestGameSimulator:
         game.simulate_game()
         
         # Check that defenders never score
-        for player in home_team.starters.defense:
+        for player in home_team.starters["Defense"]:
             assert sum(player.current_season_log["goals"]) == 0
         
         # Check that goalies never score
-        assert sum(home_team.starters.goalie.current_season_log["goals"]) == 0
-        assert sum(home_team.bench.goalie.current_season_log["goals"]) == 0
+        assert sum(home_team.starters["Goalie"][0].current_season_log["goals"]) == 0
+        assert sum(home_team.bench["Goalie"][0].current_season_log["goals"]) == 0
     
     def test_reserves_dont_play(self, sample_team):
         """Test that reserve players don't play (performance = 0)"""
@@ -548,10 +446,10 @@ class TestGameSimulator:
         
         # For every player, goals should never exceed shots
         all_players = (
-            home_team.starters.forwards + 
-            home_team.starters.midfielders + 
-            home_team.bench.forwards + 
-            home_team.bench.midfielders
+            home_team.starters["Forward"] + 
+            home_team.starters["Midfielder"] + 
+            home_team.bench["Forward"] + 
+            home_team.bench["Midfielder"]
         )
         
         for player in all_players:
@@ -622,7 +520,7 @@ class TestGameSimulator:
         away = sample_team("A")
         game = GameSimulator(home, away)
         game.simulate_game()
-        for p in home.bench.forwards + home.bench.midfielders:
+        for p in home.bench["Forward"] + home.bench["Midfielder"]:
             assert len(p.current_season_log["goals"]) == 1
             assert len(p.current_season_log["shots_taken"]) == 1
 
@@ -817,13 +715,13 @@ class TestGoalieStats:
         assert game.stat_tracker.away_goalie_goals_allowed >= 0
 
         # Verify goalie logs have entries (at least one from this game)
-        assert len(home.starters.goalie.current_season_log["saves"]) >= 1
-        assert len(home.starters.goalie.current_season_log["goals_allowed"]) >= 1
-        assert len(home.bench.goalie.current_season_log["saves"]) >= 1
+        assert len(home.starters["Goalie"][0].current_season_log["saves"]) >= 1
+        assert len(home.starters["Goalie"][0].current_season_log["goals_allowed"]) >= 1
+        assert len(home.bench["Goalie"][0].current_season_log["saves"]) >= 1
 
         # Last entry should be non-negative
-        assert home.starters.goalie.current_season_log["saves"][-1] >= 0
-        assert home.starters.goalie.current_season_log["goals_allowed"][-1] >= 0
+        assert home.starters["Goalie"][0].current_season_log["saves"][-1] >= 0
+        assert home.starters["Goalie"][0].current_season_log["goals_allowed"][-1] >= 0
 
     def test_goalie_saves_match_goals_scored(self, sample_team):
         """Total saves + goals allowed should equal shots on goal."""
