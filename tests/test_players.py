@@ -105,11 +105,30 @@ def test_round_trip_with_injuries():
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
     )
-    p.injure(2025, "Knee (Strain)", 10)
+    p.injure(2025, "Knee (Strain)")
     d = p.to_dict()
     loaded = Player.from_dict(d)
     assert len(loaded.injury_log.injuries) == 1
     assert loaded.is_injured is True
+
+
+def test_advance_year_resets_season_log():
+    """A new season starts with a clean stat sheet."""
+    p = Player(
+        name="Ager", age=25, years_in_league=3, height=70, weight=170,
+        position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
+        max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
+    )
+    p.current_season_log["goals"].extend([1, 2, 3])
+    p.current_season_log["shots_taken"].extend([4, 5, 6])
+    age_before = p.age
+
+    p.advance_year()
+
+    assert p.age == age_before + 1
+    assert p.current_season_log["goals"] == []
+    assert p.current_season_log["shots_taken"] == []
+    assert p.current_season_log["saves"] == []
 
 
 def test_round_trip_with_season_log():
@@ -154,7 +173,7 @@ def test_eq_identical_copy(player_obj):
 
 @pytest.mark.parametrize("position", ["Forward", "Midfielder", "Defense", "Goalie"])
 def test_create_new_player_all_positions(position):
-    p = Player.create_new_player(f"Test {position}", position, 2)
+    p = Player.create_new_player(f"Test {position}", position)
     assert p.position == position
     assert 0 <= p.offense <= 10
     assert 0 <= p.defense <= 10
@@ -171,11 +190,16 @@ def test_create_new_player_all_positions(position):
         assert p.max_goalie_skill == pytest.approx(0.1)
 
 
-@pytest.mark.parametrize("rating", [0, 1, 2, 3])
-def test_create_new_player_all_ratings(rating):
-    p = Player.create_new_player("RatingTest", "Forward", rating)
-    assert 0 <= p.offense <= 10
-    assert 0 <= p.defense <= 10
+def test_create_new_player_overall_distribution():
+    """Overall skill is sampled from N(5, 1.5), floored at 0 and capped at 10."""
+    players = [Player.create_new_player("DistTest", "Forward") for _ in range(300)]
+    # All stats must respect the [0, 10] cap.
+    for p in players:
+        assert 0 <= p.offense <= 10
+        assert 0 <= p.defense <= 10
+    # Mean overall (offense+defense average over a Forward) should sit near 5.
+    overalls = [(p.offense + p.defense) / 2 for p in players]
+    assert 3.5 < sum(overalls) / len(overalls) < 6.5
 
 
 # ======================================================================
@@ -302,13 +326,13 @@ def test_total_season_goals_with_data():
 # ======================================================================
 
 def test_injury(player_obj):
-    player_obj.injure(year=2023, injury_type="Finger (Minor Fracture)", current_game=5)
+    player_obj.injure(year=2023, injury_type="Finger (Minor Fracture)")
     assert player_obj.injury_log.active_injury
     assert len(player_obj.injury_log.injuries) == 1
 
 
 def test_random_player_attribute():
-    p = Player.create_new_player("Harry Boxin", "Forward", 3)
+    p = Player.create_new_player("Harry Boxin", "Forward")
     assert p.name == "Harry Boxin"
     assert p.years_in_league == 0
     assert not p.is_injured
@@ -332,32 +356,32 @@ class TestInjuryReport:
 
     def test_add_minor_injury(self):
         ir = InjuryReport(active_injury=False, injuries=[])
-        duration = ir.add(2025, "Finger (Sprain)", 10)
+        duration = ir.add(2025, "Finger (Sprain)")
         assert ir.active_injury is True
         assert len(ir) == 1
         assert duration >= 0
 
     def test_add_moderate_injury(self):
         ir = InjuryReport(active_injury=False, injuries=[])
-        duration = ir.add(2025, "Finger (Minor Fracture)", 5)
+        duration = ir.add(2025, "Finger (Minor Fracture)")
         assert ir.active_injury is True
         assert duration >= 0
 
     def test_add_major_injury(self):
         ir = InjuryReport(active_injury=False, injuries=[])
-        duration = ir.add(2025, "ACL (Tear)", 20)
+        duration = ir.add(2025, "ACL (Tear)")
         assert ir.active_injury is True
         assert duration >= 0
 
     def test_add_while_already_injured_returns_false(self):
         ir = InjuryReport(active_injury=True, injuries=[(2025, "Knee (Strain)", 3, 5, True)])
-        result = ir.add(2025, "Ankle (Sprain)", 10)
+        result = ir.add(2025, "Ankle (Sprain)")
         assert result is False
         assert len(ir) == 1
 
     def test_to_dict_from_dict_round_trip(self):
         ir = InjuryReport(active_injury=False, injuries=[])
-        ir.add(2024, "Knee (Strain)", 3)
+        ir.add(2024, "Knee (Strain)")
         d = ir.to_dict()
         loaded = InjuryReport.from_dict(d)
         assert loaded.active_injury is True
@@ -370,9 +394,72 @@ class TestInjuryReport:
 
     def test_repr_with_injuries(self):
         ir = InjuryReport(active_injury=False, injuries=[])
-        ir.add(2025, "Finger (Sprain)", 10)
+        ir.add(2025, "Finger (Sprain)")
         r = repr(ir)
         assert "1 injuries" in r
+
+    def test_tick_recovers_after_duration(self):
+        ir = InjuryReport(active_injury=False, injuries=[])
+        duration = ir.add(2025, "Knee (Strain)")
+        assert ir.games_remaining == duration
+
+        # Tick down to one game before recovery.
+        for _ in range(duration - 1):
+            ir.tick()
+        assert ir.active_injury is True
+
+        # Final tick recovers.
+        ir.tick()
+        assert ir.active_injury is False
+        assert ir.injuries[0][4] is False
+        assert ir.games_remaining == 0
+
+    def test_tick_recovery_survives_serialization(self):
+        """Records stay mutable after a JSON round-trip, so tick() works."""
+        ir = InjuryReport(active_injury=False, injuries=[])
+        duration = ir.add(2025, "ACL (Tear)")
+        loaded = InjuryReport.from_dict(ir.to_dict())
+        for _ in range(duration):
+            loaded.tick()  # must not raise (records are lists)
+        assert loaded.active_injury is False
+
+
+def test_player_tick_injury_recovers():
+    p = Player(
+        name="Hurt", age=25, years_in_league=3, height=70, weight=170,
+        position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
+        max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
+    )
+    duration = p.injure(2025, "Finger (Sprain)")
+    assert p.is_injured is True
+
+    for _ in range(duration):
+        p.tick_injury()
+    assert p.is_injured is False
+
+
+def test_apply_injury_impact_young_lowers_ceiling():
+    young = Player(
+        name="Kid", age=20, years_in_league=1, height=70, weight=170,
+        position="Forward", offense=4.0, defense=3.0, goalie_skill=0.1,
+        max_offense=8.0, max_defense=6.0, max_goalie_skill=0.1, variance=0.5,
+        peak_age=27,
+    )
+    young.apply_injury_impact()
+    assert young.max_offense < 8.0  # growth ceiling lowered
+    assert young.max_defense < 6.0
+    assert young.max_offense >= young.offense  # never below current ability
+
+
+def test_apply_injury_impact_old_accelerates_decline():
+    old = Player(
+        name="Vet", age=33, years_in_league=12, height=71, weight=180,
+        position="Defense", offense=5.0, defense=7.0, goalie_skill=0.1,
+        max_offense=6.0, max_defense=8.0, max_goalie_skill=0.1, variance=0.5,
+        peak_age=27, decline_age=30, decline_rate=0.2,
+    )
+    old.apply_injury_impact()
+    assert old.decline_rate > 0.2
 
 
 # ======================================================================

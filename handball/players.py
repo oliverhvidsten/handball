@@ -25,72 +25,85 @@ import random
 from dataclasses import dataclass, field
 import numpy as np
 
-from handball.simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES, STAT_GEN
+from handball.simulation_vars import (
+    MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES,
+    NEW_PLAYER_MEAN, NEW_PLAYER_STD, STAT_CAP,
+    INJURY_GROWTH_PENALTY, INJURY_DECLINE_MULTIPLIER, MAX_DECLINE_RATE,
+)
 
 
 @dataclass
 class InjuryReport():
 
     active_injury: bool
-    injuries: list # list of tuples: (year, injury_type, injury duration, start_game, current)
-    
+    injuries: list  # records: [year, injury_type, duration, games_remaining, current]
+
     def __repr__(self):
         str_dump = [f"This player has sustained {len(self.injuries)} injuries."]
-        for injury in self.injuries:
-            if injury[3] + injury[2] >= GAMES_IN_SEASON:
-                end_date = "END OF SEASON"
-            elif injury[4]:
-                end_date = "CURRENT"
-            else:
-                end_date = f"Game {injury[3] + injury[2]}"
-            str_dump.append(f"{injury[0]}: {injury} (Game {injury[3]} – {end_date})")
+        for year, itype, duration, remaining, current in self.injuries:
+            status = f"{remaining} games remaining" if current else "recovered"
+            str_dump.append(f"{year}: {itype} (duration {duration}, {status})")
         return "\n".join(str_dump)
 
     def __len__(self):
         return len(self.injuries)
-    
-    def add(self, year, injury_type, start_game):
-        """ Add an injury to the player's report """
+
+    def add(self, year, injury_type):
+        """
+        Add an injury to the player's report. Duration is sampled in *games*
+        from a severity-based distribution; the injury then ticks down one game
+        at a time via tick(). Returns the duration, or False if already injured.
+        """
         if self.active_injury:
-            return False # A player should not be able to get reinjured (since they are not playing)
+            return False  # can't be re-injured while already out
+
         self.active_injury = True
-        
-        # Determine injury duration
         if injury_type in MINOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(2, 1)))
+            duration = int(np.round(np.random.normal(2, 1)))
         elif injury_type in MODERATE_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(5, 2)))
+            duration = int(np.round(np.random.normal(5, 2)))
         elif injury_type in MAJOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(10, 3)))
+            duration = int(np.round(np.random.normal(10, 3)))
+        else:
+            duration = 1
+        duration = max(1, duration)  # every injury sidelines at least one game
 
-        # Add the injury description
-        self.injuries.append(
-            (year, injury_type, injury_duration, start_game, True)
-        )
-    
-        return injury_duration
-    
+        # [year, type, duration, games_remaining, current]
+        self.injuries.append([year, injury_type, duration, duration, True])
+        return duration
 
-    def update(self, game_number):
-        """ Update status of an active injury """
+    def tick(self):
+        """
+        Advance one game: decrement the active injury's games-remaining and
+        mark it recovered once it reaches zero. Season-agnostic (no dependence
+        on an absolute game counter), so injuries carry across periods/seasons.
+        """
         if self.active_injury:
-            if game_number > (self.injuries[-1][2] + self.injuries[-1][3]):
-                self.injuries[-1][4] = False
+            last = self.injuries[-1]
+            last[3] = max(0, last[3] - 1)  # games_remaining
+            if last[3] <= 0:
+                last[4] = False
                 self.active_injury = False
 
+    @property
+    def games_remaining(self):
+        """Games left on the current injury (0 if healthy)."""
+        if self.active_injury and self.injuries:
+            return self.injuries[-1][3]
+        return 0
 
     def to_dict(self):
-        """ Prepare object to be saved as a JSON, tuples are not supported by JSON """
+        """ Prepare object to be saved as JSON. """
         return {
             "active_injury": self.active_injury,
             "injuries": [list(injury) for injury in self.injuries]
         }
-    
+
     @classmethod
     def from_dict(cls, d):
-        """ Create injury report object from dicionary that was previouly jsonified
-            tuples are not JSON supported, so they will have been made into tuples """
-        d["injuries"] = [tuple(injury) for injury in d["injuries"]]
+        """ Create injury report object from a previously jsonified dictionary.
+            Records are kept as mutable lists so tick() can update them. """
+        d["injuries"] = [list(injury) for injury in d["injuries"]]
         return cls(**d)
 
 
@@ -134,13 +147,16 @@ class Player():
         "shots_taken": [],
         "goals": [],
         "performances": [],
+        "saves": [],  # for goalies: saves made per game
+        "goals_allowed": [],  # for goalies: goals allowed per game
     })
 
     @classmethod
-    def create_new_player(cls, name, position, rating):
+    def create_new_player(cls, name, position):
         """
-        Create a player for the draft. This player not previously been in the league
-        Take in player name and rating
+        Create a player for the draft. This player not previously been in the league.
+        Takes in player name and position; the player's overall skill is sampled
+        directly from a normal distribution (no rating tiers).
         """
         stats = dict()
         #Biographical
@@ -153,12 +169,13 @@ class Player():
         stats["weight"] = int(round(random.normalvariate(175, 15)))
 
 
-        # Get overall score
-        overall = max(0, random.normalvariate(*STAT_GEN[rating]))
+        # Get overall score: sampled from N(NEW_PLAYER_MEAN, NEW_PLAYER_STD),
+        # floored at 0 and capped at STAT_CAP.
+        overall = min(STAT_CAP, max(0, random.normalvariate(NEW_PLAYER_MEAN, NEW_PLAYER_STD)))
 
-        def split_rating(overall, is_midfielder):
+        def split_overall(overall, is_midfielder):
             """
-            Split the overall score into individual scores
+            Split the overall score into individual offense/defense scores
             """
             # Midfielders should have lower difference between offense and defense scores
             if is_midfielder:
@@ -167,7 +184,9 @@ class Player():
                 std = 1
             
             first_score = min(10, max(0, random.uniform(overall, std)))
-            second_score = (2*overall) - first_score
+            # Clamp the complementary score to [0, 10] too; for a low overall
+            # the raw complement (2*overall - first_score) can go negative.
+            second_score = min(10, max(0, (2 * overall) - first_score))
             scores = [first_score, second_score]
 
             # Offense and defense scores are randomized for midfielders
@@ -186,13 +205,13 @@ class Player():
                 offense, defense = 0.1, 0.1
                 goalie_skill = overall
             case "Defense":
-                defense, offense, = split_rating(overall, is_midfielder=False)
+                defense, offense, = split_overall(overall, is_midfielder=False)
                 goalie_skill = 0.1
             case "Forward":
-                offense, defense, = split_rating(overall, is_midfielder=False)
+                offense, defense, = split_overall(overall, is_midfielder=False)
                 goalie_skill = 0.1
             case "Midfielder":
-                offense, defense, = split_rating(overall, is_midfielder=True)
+                offense, defense, = split_overall(overall, is_midfielder=True)
                 goalie_skill = 0.1
                 
 
@@ -241,6 +260,8 @@ class Player():
             "shots_taken": list(), # list of number of shots taken in each game (to get a shooting percentage)
             "goals": list(), # list of number of goals scored in each game
             "performances": list(), # list of overall game performances (contributions to overall team score, bench players scaled to full contributions)
+            "saves": list(), # for goalies: saves made per game
+            "goals_allowed": list(), # for goalies: goals allowed per game
         }
         stats["awards_won"] = []
 
@@ -314,12 +335,19 @@ class Player():
     def from_dict(cls, d):
         """ Create player object from dictionary representation """
         d["injury_log"] = InjuryReport.from_dict(d["injury_log"])
+        # Ensure current_season_log has all required keys (backwards compatibility)
+        if "current_season_log" in d:
+            log = d["current_season_log"]
+            if "saves" not in log:
+                log["saves"] = []
+            if "goals_allowed" not in log:
+                log["goals_allowed"] = []
         return cls(**d)
 
 
     def advance_year(self):
-        """ 
-        update information and stats when year is advanced 
+        """
+        update information and stats when year is advanced
         new_year (int): The upcoming season
         """
         self.update_stats(years=1, rate_scale=1) # increment stats by 1 year with no rate scaling
@@ -327,13 +355,47 @@ class Player():
         self.years_in_league += 1
         self.years_remaining -= 1
 
+        # A new season starts with a clean stat sheet; last season's per-game
+        # log should not carry over (otherwise stats accumulate forever).
+        self.current_season_log = {
+            "shots_taken": [],
+            "goals": [],
+            "performances": [],
+            "saves": [],
+            "goals_allowed": [],
+        }
+
     
-    def injure(self, year, injury_type, current_game):
-        """ injure player """
+    def injure(self, year, injury_type):
+        """ Injure the player: mark them injured and log the injury. Returns the
+            injury duration in games. """
         self.is_injured = True
-        self.has_been_injured = True
-        self.injury_log.add(year, injury_type, current_game)
-        ###Injury type and duration###############
+        return self.injury_log.add(year, injury_type)
+
+    def tick_injury(self):
+        """
+        Advance the player's active injury by one game (decrement games
+        remaining) and sync ``is_injured`` with the injury log. Called once per
+        game the player's team plays while they are hurt.
+        """
+        self.injury_log.tick()
+        self.is_injured = self.injury_log.active_injury
+
+    def apply_injury_impact(self):
+        """
+        Degrade the player's development trajectory after a major injury,
+        scaled by where they are in their career:
+          - younger than peak: growth slows (lower the stat ceilings)
+          - at/after peak: decline accelerates (raise decline_rate, capped)
+        """
+        if self.age < self.peak_age:
+            self.max_offense = max(self.offense, self.max_offense * INJURY_GROWTH_PENALTY)
+            self.max_defense = max(self.defense, self.max_defense * INJURY_GROWTH_PENALTY)
+            self.max_goalie_skill = max(
+                self.goalie_skill, self.max_goalie_skill * INJURY_GROWTH_PENALTY
+            )
+        else:
+            self.decline_rate = min(MAX_DECLINE_RATE, self.decline_rate * INJURY_DECLINE_MULTIPLIER)
 
     def update_contract(self, contract_term, contract_salary, rookie):
         """ Set contract information """
@@ -388,6 +450,21 @@ class Player():
     @property
     def total_season_goals(self):
         return sum(self.current_season_log["goals"])
+
+    @property
+    def total_season_saves(self):
+        return sum(self.current_season_log["saves"])
+
+    @property
+    def total_season_goals_allowed(self):
+        return sum(self.current_season_log["goals_allowed"])
+
+    @property
+    def save_percentage(self):
+        total_shots_faced = self.total_season_saves + self.total_season_goals_allowed
+        if total_shots_faced == 0:
+            return 0.0
+        return self.total_season_saves / total_shots_faced
 
         
 

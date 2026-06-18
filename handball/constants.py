@@ -11,6 +11,9 @@ Date: 1/25/2025 1:28PM PST
 ## General Information
 TEAM_RANGE = "A3:F32"
 
+# Single cell holding the team's "W-L-T" record string (e.g. "12-4-1").
+RECORD_CELL = "F3"
+
 STARTERS_ROW = 5 # These are the indicies of the first player in the section
 BENCH_ROW = 17
 RESERVES_ROW = 26

@@ -18,7 +18,7 @@ from handball.simulation_vars import (
     )
 
 class GameSimulator():
-    def __init__(self, home_team:Team, away_team:Team, allow_tie=True):
+    def __init__(self, home_team:Team, away_team:Team, allow_tie=False):
         self.home_team = home_team
         self.away_team = away_team
         self.allow_tie = allow_tie
@@ -140,8 +140,6 @@ class GameSimulator():
 
 
     def simulate_game(self):
-        # TODO: Overtime
-
         ## Coin Flip
         if self.prob_stack.pop() <= 0.5:
             self.home_flip_winner = True
@@ -158,7 +156,7 @@ class GameSimulator():
         self.game_clock.set_time(REGULATION_TIME/2)
         self.simulate_half()
 
-        ## HALFTIME, 
+        ## HALFTIME,
         # 1) flip the possessions from the coinflip
         if self.home_flip_winner:
             self.offense_stats = self.away_stats
@@ -185,8 +183,94 @@ class GameSimulator():
         self.game_clock.set_time(REGULATION_TIME/2)
         self.simulate_half(second_half=True)
 
+        # OVERTIME: Sudden death if tied and ties not allowed
+        if self.home_score == self.away_score and not self.allow_tie:
+            self._simulate_overtime()
+
         # Game is done! Retrieve information from objects
         self.postgame()
+
+    def _simulate_overtime(self):
+        """
+        Sudden death overtime: first team to score wins.
+        Alternating possessions until someone scores.
+        """
+        self.stat_tracker.start_overtime()
+
+        # Coin flip for first OT possession
+        if self.prob_stack.pop() <= 0.5:
+            self.home_posession = True
+            self.offense_stats = self.home_stats
+            self.defense_stats = self.away_stats
+        else:
+            self.home_posession = False
+            self.offense_stats = self.away_stats
+            self.defense_stats = self.home_stats
+
+        # Reset ball position
+        self.ball_position = 20
+
+        # Keep playing until someone scores
+        while self.home_score == self.away_score:
+            scored, turnover_position = self.offensive_posession_overtime()
+
+            if scored:
+                if self.home_posession:
+                    self.home_score += 1
+                else:
+                    self.away_score += 1
+                break
+
+            # Change possession
+            self.home_posession = not self.home_posession
+            temp = self.offense_stats
+            self.offense_stats = self.defense_stats
+            self.defense_stats = temp
+
+            # Set ball position after turnover
+            if turnover_position:
+                self.ball_position = 40 - turnover_position
+            else:
+                self.ball_position = 20
+
+    def offensive_posession_overtime(self):
+        """
+        Overtime possession - no clock management, just play until scored or turnover.
+        """
+        turnover_position = False
+        scored = False
+
+        while True:
+            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))):
+                # Take a shot
+                scored, off_recovery, turnover = self.stat_tracker.take_shot(
+                    ball_position=self.ball_position,
+                    prob_stack=self.prob_stack,
+                    offense_stats=self.offense_stats,
+                    defense_stats=self.defense_stats,
+                    home_posession=self.home_posession,
+                    time_left=0,  # OT has no clock display
+                )
+                if turnover:
+                    turnover_position = self.ball_position + (40 - self.ball_position) * self.prob_stack.pop()
+                    break
+                if scored:
+                    break
+                if off_recovery:
+                    pass
+            else:
+                # Pass the ball
+                if np.random.uniform(0, 1) < self.offense_stats["ratio"]:
+                    self.ball_position += min(40 - self.ball_position, np.random.normal(4, 1.5))
+                else:
+                    turnover_position = self.ball_position + min(40 - self.ball_position, np.random.normal(4, 1.5)) * self.prob_stack.pop()
+                    if self.home_posession:
+                        self.stat_tracker.home_turnovers += 1
+                    else:
+                        self.stat_tracker.away_turnovers += 1
+                    break
+
+        return scored, turnover_position
 
 
     def simulate_half(self, second_half=False):
@@ -305,7 +389,6 @@ class GameSimulator():
         return scored, turnover_position
     
     def postgame(self):
-        
         # Add win and loss to the correct teams' records
         if self.home_score > self.away_score:
             self.home_team.win()
@@ -313,29 +396,68 @@ class GameSimulator():
         elif self.away_score > self.home_score:
             self.home_team.lose()
             self.away_team.win()
-        else: # In case of a tie
-            if self.allow_tie:
-                self.home_team.tie()
-                self.away_team.tie()
-            else:
-                # TODO: Figure out what happens in the case of a tie
-                raise NotImplementedError
-
-
-
-
-        # TODO: Store the score tracker paragraph from the StatTracker
-        # TODO: Save a descriptive one-liner about the game
+        else:  # In case of a tie (only possible if allow_tie=True)
+            self.home_team.tie()
+            self.away_team.tie()
 
         # Update player objects with final offensive stats
         self.home_team.update_offensive_stats(
-            goals_scored=self.stat_tracker.home_goals, 
+            goals_scored=self.stat_tracker.home_goals,
             shots_taken=self.stat_tracker.home_shots
         )
         self.away_team.update_offensive_stats(
             goals_scored=self.stat_tracker.away_goals,
             shots_taken=self.stat_tracker.away_shots
         )
+
+        # Update goalie stats
+        self.home_team.update_goalie_stats(
+            saves=self.stat_tracker.home_goalie_saves,
+            goals_allowed=self.stat_tracker.home_goalie_goals_allowed
+        )
+        self.away_team.update_goalie_stats(
+            saves=self.stat_tracker.away_goalie_saves,
+            goals_allowed=self.stat_tracker.away_goalie_goals_allowed
+        )
+
+        # Build game summary for RecordKeeper
+        self.game_summary = {
+            "home_team": self.home_team.team_name,
+            "away_team": self.away_team.team_name,
+            "home_score": self.home_score,
+            "away_score": self.away_score,
+            "went_to_overtime": self.stat_tracker.in_overtime,
+            "scoring_log": self.stat_tracker.get_score_info(),
+            "home_goals_by_player": {
+                self.stat_tracker.home_scorers[i].name: int(self.stat_tracker.home_goals[i])
+                for i in range(len(self.stat_tracker.home_scorers))
+                if self.stat_tracker.home_goals[i] > 0
+            },
+            "away_goals_by_player": {
+                self.stat_tracker.away_scorers[i].name: int(self.stat_tracker.away_goals[i])
+                for i in range(len(self.stat_tracker.away_scorers))
+                if self.stat_tracker.away_goals[i] > 0
+            },
+            # Shots keyed by every player who attempted at least one shot, so
+            # RecordKeeper can build complete per-player game lines (including
+            # players who shot but did not score).
+            "home_shots_by_player": {
+                self.stat_tracker.home_scorers[i].name: int(self.stat_tracker.home_shots[i])
+                for i in range(len(self.stat_tracker.home_scorers))
+                if self.stat_tracker.home_shots[i] > 0
+            },
+            "away_shots_by_player": {
+                self.stat_tracker.away_scorers[i].name: int(self.stat_tracker.away_shots[i])
+                for i in range(len(self.stat_tracker.away_scorers))
+                if self.stat_tracker.away_shots[i] > 0
+            },
+            "home_goalie_saves": self.stat_tracker.home_goalie_saves,
+            "away_goalie_saves": self.stat_tracker.away_goalie_saves,
+        }
+
+    def get_game_summary(self):
+        """Return the game summary dict for RecordKeeper integration."""
+        return getattr(self, 'game_summary', None)
 
 """
 def old__simulate_game(home_team, away_team):
@@ -413,7 +535,6 @@ class StatTracker():
     """
     Keeps track of players stats throughout the match
     """
-    # TODO: add in goalie saves and save percentage
     def __init__(self, home_team, home_scorer_stats, away_team, away_scorer_stats):
 
         # Scoring Updates
@@ -421,6 +542,7 @@ class StatTracker():
 
         # what half it is
         self.first_half = True
+        self.in_overtime = False
 
         ## SET UP HOME TEAM INFO
         self.home_team_name = home_team.team_name
@@ -430,7 +552,7 @@ class StatTracker():
             home_team.bench.forwards, # 2 players
             home_team.bench.midfielders, # 2 players
             ))
-        
+
         # Weight by the minutes played and overall contribution to the offense.
         # Use the offense values from the Player objects on the team, so this
         # works whether the caller passes in Player objects or simple ratings.
@@ -444,6 +566,10 @@ class StatTracker():
         self.home_off_recov = 0
         self.home_turnovers = 0
 
+        # Goalie stats for home team (saves by away goalie against home offense)
+        self.home_goalie_saves = 0  # saves made by home goalie
+        self.home_goalie_goals_allowed = 0  # goals allowed by home goalie
+
 
         ## SET UP AWAY TEAM INFO
         self.away_team_name = away_team.team_name
@@ -453,7 +579,7 @@ class StatTracker():
             away_team.bench.forwards, # 2 players
             away_team.bench.midfielders, # 2 players
             ))
-        
+
         # Weight by the minutes played and overall contribution to the offense.
         # Use the offense values from the Player objects on the team.
         away_scorer_offense_values = np.array([player.offense for player in self.away_scorers])
@@ -466,10 +592,19 @@ class StatTracker():
         self.away_off_recov = 0
         self.away_turnovers = 0
 
+        # Goalie stats for away team
+        self.away_goalie_saves = 0  # saves made by away goalie
+        self.away_goalie_goals_allowed = 0  # goals allowed by away goalie
+
     def halftime(self):
         """ Update information """
         self.first_half = False
         self.scoring_tracker.append("--- HALFTIME ---")
+
+    def start_overtime(self):
+        """ Mark the start of overtime """
+        self.in_overtime = True
+        self.scoring_tracker.append("--- OVERTIME (SUDDEN DEATH) ---")
 
     def get_score_info(self):
         info = [f"{self.away_team_name} @ {self.home_team_name}\n", "--- START OF REGULATION ---"]
@@ -508,18 +643,37 @@ class StatTracker():
             if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
                 scored = True
                 goals[idx] += 1
+                # Track goal allowed by defending goalie
+                if home_posession:
+                    self.away_goalie_goals_allowed += 1
+                else:
+                    self.home_goalie_goals_allowed += 1
+
+                # Determine period label for scoring tracker
+                if self.in_overtime:
+                    period_label = "OT"
+                elif self.first_half:
+                    period_label = "1st half"
+                else:
+                    period_label = "2nd half"
+
                 self.scoring_tracker.append(
-                    f"{team_name}: {scorers[idx].name} scores with {GameClock.time_to_str(time_left)} in the {'1st' if self.first_half else '2nd'} half!"
+                    f"{team_name}: {scorers[idx].name} scores with {GameClock.time_to_str(time_left)} in the {period_label}!"
                 )
-            elif prob_stack.pop() < 0.1: 
+            elif prob_stack.pop() < 0.1:
                 off_recovery = True
             else:
+                # Shot on goal was saved by the goalie
+                if home_posession:
+                    self.away_goalie_saves += 1
+                else:
+                    self.home_goalie_saves += 1
                 turnover = True
 
         elif prob_stack.pop() < 0.1:
             off_recovery = True
             off_recov += 1
-        else: 
+        else:
             turnover = True
 
         return scored, off_recovery, turnover

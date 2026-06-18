@@ -105,9 +105,11 @@ class TeamInfo():
                 player_notes_dict[player_name] = note
         if get_draft_picks:
             draft_info = sheet_handler.get_draft_picks(team_name)
+            # draft_info is a list of rows [[1st-round, 2nd-round], ...] from the
+            # sheet; index by row/column rather than numpy-style slicing.
             draft_picks = {
-                "1st Round": [pick for pick in draft_info[:, 0] if pick is not None and len(pick) > 0], 
-                "2nd Round": [pick for pick in draft_info[:, 1] if pick is not None and len(pick) > 0]}
+                "1st Round": [row[0] for row in draft_info if len(row) > 0 and row[0]],
+                "2nd Round": [row[1] for row in draft_info if len(row) > 1 and row[1]]}
         else:
             draft_info = None
             draft_picks = None
@@ -167,12 +169,30 @@ class TeamInfo():
             raw_data=(team_info, draft_info, player_notes_dict)
         )
 
+    # TEAM_RANGE ("A3:F32") spans 30 rows x 6 columns.
+    _TEAM_RANGE_ROWS = 30
+    _TEAM_RANGE_COLS = 6
+
+    @staticmethod
+    def _pad_grid(grid, rows, cols):
+        """
+        Pad a (possibly ragged / short) 2D grid out to ``rows`` x ``cols`` with
+        empty strings. The Google Sheets API omits trailing empty cells/rows, so
+        an empty team tab returns far fewer than the full TEAM_RANGE; padding
+        lets update_sheet index and write every cell without IndexError.
+        """
+        padded = [list(row) + [""] * (cols - len(row)) for row in grid]
+        while len(padded) < rows:
+            padded.append([""] * cols)
+        return padded
+
     @classmethod
     def from_empty_sheet(cls, sheet_handler:SheetHandler, team_name:str):
         """
         Create a TeamInfo object from an empty sheet
         """
         team_info = sheet_handler.get_full_team_values(team_name)
+        team_info = cls._pad_grid(team_info, cls._TEAM_RANGE_ROWS, cls._TEAM_RANGE_COLS)
         draft_info = sheet_handler.get_draft_picks(team_name)
         player_notes, player_names = sheet_handler.get_player_notes(team_name)
         player_notes_dict = dict()
@@ -327,12 +347,165 @@ class Team():
 
     def win(self):
         self.record[0] += 1
-        
+
     def lose(self):
         self.record[1] += 1
 
     def tie(self):
         self.record[2] += 1
+
+    def all_players(self):
+        """Return a flat list of every Player on the team (starters, bench, reserves)."""
+        players = []
+        for subroster in (self.starters, self.bench):
+            players.extend(subroster.forwards)
+            players.extend(subroster.midfielders)
+            players.extend(subroster.defense)
+            players.append(subroster.goalie)
+        players.extend(self.reserves)
+        return players
+
+    # ------------------------------------------------------------------
+    # Injury substitution (next-man-up by position)
+    # ------------------------------------------------------------------
+    # Map a player's position to the Subroster attribute holding that group.
+    _POSITION_GROUP = {
+        "Forward": "forwards",
+        "Midfielder": "midfielders",
+        "Defense": "defense",
+        "Goalie": "goalie",
+    }
+
+    def _subroster(self, tier):
+        return self.starters if tier == "starters" else self.bench
+
+    def _get_slot(self, tier, group, index):
+        sub = self._subroster(tier)
+        if group == "goalie":
+            return sub.goalie
+        return getattr(sub, group)[index]
+
+    def _set_slot(self, tier, group, index, player):
+        sub = self._subroster(tier)
+        if group == "goalie":
+            sub.goalie = player
+        else:
+            getattr(sub, group)[index] = player
+
+    def _locate_active(self, player):
+        """Find a player among starters/bench by identity: (tier, group, index)."""
+        for tier in ("starters", "bench"):
+            sub = self._subroster(tier)
+            for group in ("forwards", "midfielders", "defense"):
+                for i, p in enumerate(getattr(sub, group)):
+                    if p is player:
+                        return tier, group, i
+            if sub.goalie is player:
+                return tier, "goalie", None
+        return None
+
+    def _find_healthy_reserve(self, position):
+        for i, p in enumerate(self.reserves):
+            if p.position == position and not p.is_injured:
+                return i, p
+        return None
+
+    def _find_healthy_bench(self, group):
+        sub = self.bench
+        if group == "goalie":
+            g = sub.goalie
+            return (None, g) if (g is not None and not g.is_injured) else None
+        for i, p in enumerate(getattr(sub, group)):
+            if not p.is_injured:
+                return i, p
+        return None
+
+    def _pop_reserve(self, index):
+        return self.reserves.pop(index)
+
+    def apply_injury_substitution(self, injured):
+        """
+        Substitute an injured active player using next-man-up by position:
+          - starter injured: bench->starter, reserve->bench, injured->reserves
+          - bench injured:   reserve->bench, injured->reserves
+
+        Returns a reversal record (used by reverse_injury_substitution), or None
+        if the player isn't an active player or there is no healthy reserve of
+        their position to backfill (in which case they keep playing — hurt).
+        """
+        group = self._POSITION_GROUP.get(injured.position)
+        if group is None:
+            return None
+        loc = self._locate_active(injured)
+        if loc is None:
+            return None
+        tier, grp, idx = loc
+
+        res = self._find_healthy_reserve(injured.position)
+        if res is None:
+            return None  # no replacement depth -> player plays hurt
+        res_idx, reserve_player = res
+
+        if tier == "starters":
+            bench = self._find_healthy_bench(grp)
+            if bench is None:
+                return None
+            b_idx, bench_player = bench
+            self._set_slot("starters", grp, idx, bench_player)
+            self._set_slot("bench", grp, b_idx, reserve_player)
+            self._pop_reserve(res_idx)
+            self.reserves.append(injured)
+            return {
+                "type": "starter", "group": grp,
+                "injured": injured.name, "starter_index": idx,
+                "bench_player": bench_player.name, "bench_index": b_idx,
+                "reserve_player": reserve_player.name, "reserve_index": res_idx,
+            }
+
+        # bench injury
+        self._set_slot("bench", grp, idx, reserve_player)
+        self._pop_reserve(res_idx)
+        self.reserves.append(injured)
+        return {
+            "type": "bench", "group": grp,
+            "injured": injured.name, "bench_index": idx,
+            "reserve_player": reserve_player.name, "reserve_index": res_idx,
+        }
+
+    def reverse_injury_substitution(self, record):
+        """
+        Undo a substitution (manual, on a recovered player): players return to
+        their original slots. Resolves players by name from the current roster
+        so the record can be persisted/reloaded. Returns True on success.
+        """
+        by_name = {p.name: p for p in self.all_players()}
+        injured = by_name.get(record["injured"])
+        if injured is None:
+            return False
+        grp = record["group"]
+
+        # Remove the (now-recovered) injured player from reserves by identity.
+        for i, p in enumerate(self.reserves):
+            if p is injured:
+                self.reserves.pop(i)
+                break
+
+        if record["type"] == "starter":
+            bench_player = by_name.get(record["bench_player"])
+            reserve_player = by_name.get(record["reserve_player"])
+            if bench_player is None or reserve_player is None:
+                return False
+            self._set_slot("starters", grp, record["starter_index"], injured)
+            self._set_slot("bench", grp, record["bench_index"], bench_player)
+        else:
+            reserve_player = by_name.get(record["reserve_player"])
+            if reserve_player is None:
+                return False
+            self._set_slot("bench", grp, record["bench_index"], injured)
+
+        insert_at = min(record["reserve_index"], len(self.reserves))
+        self.reserves.insert(insert_at, reserve_player)
+        return True
 
 
     @classmethod
@@ -515,3 +688,20 @@ class Team():
         for reserve in self.reserves:
             reserve.current_season_log["goals"].append(0)
             reserve.current_season_log["shots_taken"].append(0)
+
+    def update_goalie_stats(self, saves: int, goals_allowed: int):
+        """
+        Update goalie stats after a game.
+        Both starting and bench goalies play during a game (halftime swap),
+        so we split the stats proportionally (starter gets 60%, bench gets 40%).
+        """
+        # Approximate split: starter plays ~60% of game, bench plays ~40%
+        starter_saves = int(round(saves * 0.6))
+        bench_saves = saves - starter_saves
+        starter_goals_allowed = int(round(goals_allowed * 0.6))
+        bench_goals_allowed = goals_allowed - starter_goals_allowed
+
+        self.starters.goalie.current_season_log["saves"].append(starter_saves)
+        self.starters.goalie.current_season_log["goals_allowed"].append(starter_goals_allowed)
+        self.bench.goalie.current_season_log["saves"].append(bench_saves)
+        self.bench.goalie.current_season_log["goals_allowed"].append(bench_goals_allowed)

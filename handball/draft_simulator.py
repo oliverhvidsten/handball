@@ -1,71 +1,161 @@
 """
 Name: draft_simulator.py
-Description: This file will generate all necessary information to operate the draft 
-- Generate New Players
-- Generate Draft Order (depending what teams have what draft picks)
+Description: Generate new draft-class players with randomly assigned stats.
+
+Player ability is not derived from any name-based model or rating tier. Each
+prospect's overall skill is sampled directly from a normal distribution inside
+``Player.create_new_player`` (see ``NEW_PLAYER_MEAN`` / ``NEW_PLAYER_STD`` in
+simulation_vars), then split into concrete offense / defense / goalie stats.
+
 Author: Oliver Hvidsten (oliverhvidsten@gmail.com)
 Date: 1/20/2025 11:07AM PST
 """
+import csv
+import random
+from pathlib import Path
 
-def player_generation(names_list, age_list, position_list):
+import numpy as np
+
+from handball.players import Player
+
+
+# Valid player positions (must match the cases in Player.create_new_player).
+POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"]
+
+
+def load_prospect_names(path):
     """
-    Generate player objects from names
-    
+    Load draft prospect names from a file.
+
+    Supported formats:
+      - ``.csv`` with a ``Name`` column (and an optional ``Position`` column)
+      - any other extension: plain text, one name per line
+
+    Returns a list of ``(name, position_or_None)`` tuples. Blank lines /
+    nameless rows are skipped. Raises FileNotFoundError if the file is missing.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"No draft names file found at '{path}'. Provide a names file "
+            "(one name per line, or a CSV with a 'Name' column)."
+        )
+
+    prospects = []
+    if p.suffix.lower() == ".csv":
+        with open(p, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = (row.get("Name") or "").strip()
+                if not name:
+                    continue
+                position = (row.get("Position") or "").strip() or None
+                prospects.append((name, position))
+    else:
+        with open(p) as f:
+            for line in f:
+                name = line.strip()
+                if name:
+                    prospects.append((name, None))
+
+    return prospects
+
+# Default probability weights per position for an auto-generated draft class.
+# Field positions are common; goalies are comparatively rare.
+DEFAULT_POSITION_WEIGHTS = {
+    "Forward": 0.30,
+    "Midfielder": 0.30,
+    "Defense": 0.30,
+    "Goalie": 0.10,
+}
+
+
+def assign_random_position(position_weights=None):
+    """
+    Randomly choose a player position.
+
     Input:
-        1. new_names_list (list): list of the new draft class names
-    Outputs:
-        (list of Players): new Player Objects containing all of the "visible" and "invisible" stats
-    """
-    # Classify how good a player will be based on their name
-    classes = classify_players(names_list)
-    # Use their class to determine the attributes of the player
-    all_player_attributes = [randomize_attributes(player_class, player_age, player_position) for player_class, player_age, player_position in zip(classes, age_list, position_list)]
-
-    ## create Player Objects from this list of attributes 
-    all_player_objects = [generate_player_objects(name, attributes, age) for name, attributes, age in zip(names_list, all_player_attributes, age_list)]
-    
-    raise NotImplementedError
-
-
-
-def classify_players(new_names):
-    """
-    Feed new names into the pre-trained ML algorithm to classify if they will be good, bad, etc
-
-    Input:
-        1. new_names (list): list of the new draft class names
-    Outputs
-        (list): name classifications 
-    """
-
-    raise NotImplementedError
-
-##At least partially accounted for in Player class -- we need to call and discuss where some things will happen
-def randomize_attributes(player_class, player_age, player_position):
-    """
-    Based of off how good they "should" be based off of their name and some randomization that will make 
-    them theoretically better or worse, generate their stats. 
-    Take into account age (older players should be able to perform at a higher level, but age should not affect physical maxima)
-
-    Input:
-        1. player_class (int): Player Ability Class
-        2. player_age (int): Player Age
-        3. player_position (str): Player Position
+        1. position_weights (dict | None): position -> probability weight.
+           Defaults to ``DEFAULT_POSITION_WEIGHTS``.
 
     Output:
-        (???): the attributes of the relevant player
+        (str): the chosen position.
     """
-    raise NotImplementedError
+    weights = position_weights or DEFAULT_POSITION_WEIGHTS
+    positions = list(weights.keys())
+    probs = list(weights.values())
+    return random.choices(positions, weights=probs, k=1)[0]
 
-def generate_player_objects(attributes, name, age):
-    raise NotImplementedError
 
-
-def generate_college_stats(all_player_objects):
+def create_draft_player(name, position):
     """
-    Somehow generate player stats from college (these should theoretically be greater than what they would be expected to do in the NHA)
+    Create a single new draft-class Player with randomly assigned stats.
 
     Input:
+        1. name (str): the player's name.
+        2. position (str): one of ``POSITIONS``.
 
+    Output:
+        (Player): a newly generated Player object.
     """
-    raise NotImplementedError
+    if position not in POSITIONS:
+        raise ValueError(
+            f"Unknown position '{position}'. Expected one of {POSITIONS}."
+        )
+    return Player.create_new_player(name=name, position=position)
+
+
+def player_generation(names_list, position_list):
+    """
+    Generate Player objects from parallel lists of names and positions.
+
+    Input:
+        1. names_list (list[str]): the new draft class names.
+        2. position_list (list[str]): each prospect's position (same length as
+           names_list). Every entry must be one of ``POSITIONS``.
+
+    Output:
+        (list[Player]): new Player objects with randomly assigned stats.
+    """
+    if len(names_list) != len(position_list):
+        raise ValueError(
+            "names_list and position_list must be the same length "
+            f"(got {len(names_list)} and {len(position_list)})."
+        )
+    return [
+        create_draft_player(name, position)
+        for name, position in zip(names_list, position_list)
+    ]
+
+
+def generate_draft_class(
+    names_list,
+    position_list=None,
+    position_weights=None,
+    seed=None,
+):
+    """
+    Generate a full draft class of Player objects with randomly assigned stats.
+
+    Input:
+        1. names_list (list[str]): the new draft class names.
+        2. position_list (list[str] | None): each prospect's position. If None,
+           positions are drawn at random using ``position_weights``.
+        3. position_weights (dict | None): override the position distribution
+           used when ``position_list`` is None.
+        4. seed (int | None): if provided, seed both ``random`` and
+           ``numpy.random`` for reproducible draft classes.
+
+    Output:
+        (list[Player]): the generated draft class.
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    if position_list is None:
+        position_list = [
+            assign_random_position(position_weights) for _ in names_list
+        ]
+
+    return player_generation(names_list, position_list)
