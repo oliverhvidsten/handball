@@ -30,10 +30,11 @@ league: Dict[str, Dict[str, List[str]]] = {
 }
 
 
-# Path where persistent rival assignments are stored.
+# Path where persistent rival assignments are stored. This is league config, NOT
+# team data, so it lives at the package root -- keeping it out of datafiles_v2/,
+# which JsonTeamRepository scans for per-team JSON.
 RIVALS_JSON_PATH = os.path.join(
     os.path.dirname(__file__),
-    "datafiles",
     "rivals.json",
 )
 
