@@ -1,0 +1,11 @@
+# Secrets / credentials
+cred.txt
+gs_key.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
