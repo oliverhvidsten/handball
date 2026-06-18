@@ -11,14 +11,15 @@ Date: 1/20/2025 12:32PM PST
 import numpy as np
 from itertools import chain
 
-from utils import ProbabilityStack
-from teams import Team
-from simulation_vars import (
+from handball.utils import ProbabilityStack
+from handball.domain import Team
+from handball.simulation_vars import (
     REGULATION_TIME, K, TIME_PER_PASS, TIME_PER_SHOT, MAIN_STAT, SECONDARY_STAT, MIDDIE_STATS, TIME_AFTER_SCORE, STARTER_MINUTES, BENCH_MINUTES
     )
 
+
 class GameSimulator():
-    def __init__(self, home_team:Team, away_team:Team, allow_tie=True):
+    def __init__(self, home_team:Team, away_team:Team, allow_tie=False):
         self.home_team = home_team
         self.away_team = away_team
         self.allow_tie = allow_tie
@@ -50,58 +51,86 @@ class GameSimulator():
 
             minutes_list = [STARTER_MINUTES if i < 9 else BENCH_MINUTES for i in range(15)]
 
-            ## Calculate offense stats for each player
-            start_forward_offense = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.starters.forwards] * MAIN_STAT
-            start_middie_offense = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.starters.midfielders] * MIDDIE_STATS
-            start_defense_offense = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.starters.defense] * SECONDARY_STAT
-            bench_forward_offense = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.bench.forwards] * MAIN_STAT
-            bench_middie_offense = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.bench.midfielders] * MIDDIE_STATS
-            bench_defense_offense = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.bench.defense] * SECONDARY_STAT
+            ## Calculate offense stats for each player (weighted by position)
+            # Sample stats for each player
+            start_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.starters["Forward"]]
+            start_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.starters["Midfielder"]]
+            start_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.starters["Defense"]]
+            bench_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.bench["Forward"]]
+            bench_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.bench["Midfielder"]]
+            bench_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.bench["Defense"]]
 
-            # Get the stats for just the possible scorers (will be used to assign probability of scoring later on)
-            scorer_stats = [start_forward_offense, start_middie_offense, bench_forward_offense, bench_middie_offense]
-            scorer_stats = [stat for stats in scorer_stats for stat in stats]
+            # Weight each stat by position importance and multiply by minutes played
+            start_forward_offense = [stat * MAIN_STAT for stat in start_forward_offense_raw]
+            start_middie_offense = [stat * MIDDIE_STATS for stat in start_middie_offense_raw]
+            start_defense_offense = [stat * SECONDARY_STAT for stat in start_defense_offense_raw]
+            bench_forward_offense = [stat * MAIN_STAT for stat in bench_forward_offense_raw]
+            bench_middie_offense = [stat * MIDDIE_STATS for stat in bench_middie_offense_raw]
+            bench_defense_offense = [stat * SECONDARY_STAT for stat in bench_defense_offense_raw]
 
-            # Get the offense stat by summing over all stats
-            combined_list_off = [start_forward_offense, start_middie_offense, start_defense_offense, bench_forward_offense, bench_middie_offense, bench_defense_offense]
-            offense = sum(np.array([stat for stats in combined_list_off for stat in stats]) * (np.array(minutes_list) / 60))
+            # Get the Player objects for scorers (forwards and midfielders only)
+            # StatTracker needs Player objects to access .offense attribute
+            scorer_players = (list(team_obj.starters["Forward"]) + list(team_obj.starters["Midfielder"]) + 
+                            list(team_obj.bench["Forward"]) + list(team_obj.bench["Midfielder"]))
+            
+            # Get the sampled stats for scorers (for weighting likelihood)
+            scorer_stats = start_forward_offense_raw + start_middie_offense_raw + bench_forward_offense_raw + bench_middie_offense_raw
+
+            # Combine all weighted offensive stats into a single list (one entry per player)
+            all_offense_stats = (start_forward_offense + start_middie_offense + start_defense_offense + 
+                               bench_forward_offense + bench_middie_offense + bench_defense_offense)
+            
+            # Calculate total offense by multiplying each player's weighted stat by their minutes
+            offense = sum(np.array(all_offense_stats) * (np.array(minutes_list) / 60))
 
 
-            ## Calculate defense stats for each player
-            start_forward_defense = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.starters.forwards] * SECONDARY_STAT
-            start_middie_defense = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.starters.midfielders] * MIDDIE_STATS
-            start_defense_defense = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.starters.defense] * MAIN_STAT
-            bench_forward_defense = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.bench.forwards] * SECONDARY_STAT
-            bench_middie_defense = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench.midfielders] * MIDDIE_STATS
-            bench_defense_defense = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench.defense] * MAIN_STAT
+            ## Calculate defense stats for each player (weighted by position)
+            # Sample stats for each player
+            start_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.starters["Forward"]]
+            start_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.starters["Midfielder"]]
+            start_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.starters["Defense"]]
+            bench_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.bench["Forward"]]
+            bench_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench["Midfielder"]]
+            bench_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench["Defense"]]
 
-            combined_list_def = [start_forward_defense, start_middie_defense, start_defense_defense, bench_forward_defense, bench_middie_defense, bench_defense_defense]
-            defense = sum(np.array([stat for stats in combined_list_def for stat in stats]) * (np.array(minutes_list) / 60))
+            # Weight each stat by position importance
+            start_forward_defense = [stat * SECONDARY_STAT for stat in start_forward_defense_raw]
+            start_middie_defense = [stat * MIDDIE_STATS for stat in start_middie_defense_raw]
+            start_defense_defense = [stat * MAIN_STAT for stat in start_defense_defense_raw]
+            bench_forward_defense = [stat * SECONDARY_STAT for stat in bench_forward_defense_raw]
+            bench_middie_defense = [stat * MIDDIE_STATS for stat in bench_middie_defense_raw]
+            bench_defense_defense = [stat * MAIN_STAT for stat in bench_defense_defense_raw]
+
+            # Combine all weighted defensive stats into a single list (one entry per player)
+            all_defense_stats = (start_forward_defense + start_middie_defense + start_defense_defense + 
+                               bench_forward_defense + bench_middie_defense + bench_defense_defense)
+            
+            # Calculate total defense by multiplying each player's weighted stat by their minutes
+            defense = sum(np.array(all_defense_stats) * (np.array(minutes_list) / 60))
 
 
             ## Calculate goalies' stats
-            goalie = np.random.normal(team_obj.starters.goalie.goalie_skill, team_obj.starters.goalie.variance) * 4
-            goalie_reserve = np.random.normal(team_obj.bench.goalie.goalie_skill, team_obj.bench.goalie.variance) * 4
+            goalie = np.random.normal(team_obj.starters["Goalie"][0].goalie_skill, team_obj.starters["Goalie"][0].variance) * 4
+            goalie_reserve = np.random.normal(team_obj.bench["Goalie"][0].goalie_skill, team_obj.bench["Goalie"][0].variance) * 4
 
-            # add goalie stats to these metrics
-            combined_list_off.extend([0,0])
-            combined_list_def.extend([goalie, goalie_reserve])
+            # Build combined performance list (15 non-goalies + 2 goalies = 17 players)
+            # Goalies don't contribute to offense/defense, so their offense contribution is 0
+            combined_list_off = all_offense_stats + [0, 0]
+            combined_list_def = all_defense_stats + [goalie, goalie_reserve]
             combined_list = np.array(combined_list_off) + np.array(combined_list_def)
 
             team_obj.update_performances(combined_list)
 
-            return offense, defense, goalie, goalie_reserve, scorer_stats
+            # Return Player objects for scorers (StatTracker needs to access .offense attribute)
+            return offense, defense, goalie, goalie_reserve, scorer_players
 
-        home_offense, home_defense, home_scorer_stats = calculate_stats(self.home_team)
-        away_offense, away_defense, away_scorer_stats = calculate_stats(self.away_team)
+        home_offense, home_defense, home_goalie, home_goalie_reserve, home_scorer_stats = calculate_stats(self.home_team)
+        away_offense, away_defense, away_goalie, away_goalie_reserve, away_scorer_stats = calculate_stats(self.away_team)
 
  
         home_ratio = home_offense / (home_offense + away_defense)
-        
-
         away_ratio = away_offense / (away_offense + home_defense)
-        away_goalie = np.random.normal(self.away_team.starters.goalie.goalie_skill, self.away_team.starters.goalie.variance)
-        away_goalie_reserve = np.random.normal(self.away_team.bench.goalie.goalie_skill, self.away_team.bench.goalie.variance)
+
 
         return (
             {"offense": home_offense, "defense": home_defense, "ratio": home_ratio, "goalie": home_goalie, "bench_goalie": home_goalie_reserve},
@@ -112,8 +141,6 @@ class GameSimulator():
 
 
     def simulate_game(self):
-        # TODO: Overtime
-
         ## Coin Flip
         if self.prob_stack.pop() <= 0.5:
             self.home_flip_winner = True
@@ -130,7 +157,7 @@ class GameSimulator():
         self.game_clock.set_time(REGULATION_TIME/2)
         self.simulate_half()
 
-        ## HALFTIME, 
+        ## HALFTIME,
         # 1) flip the possessions from the coinflip
         if self.home_flip_winner:
             self.offense_stats = self.away_stats
@@ -157,8 +184,94 @@ class GameSimulator():
         self.game_clock.set_time(REGULATION_TIME/2)
         self.simulate_half(second_half=True)
 
+        # OVERTIME: Sudden death if tied and ties not allowed
+        if self.home_score == self.away_score and not self.allow_tie:
+            self._simulate_overtime()
+
         # Game is done! Retrieve information from objects
         self.postgame()
+
+    def _simulate_overtime(self):
+        """
+        Sudden death overtime: first team to score wins.
+        Alternating possessions until someone scores.
+        """
+        self.stat_tracker.start_overtime()
+
+        # Coin flip for first OT possession
+        if self.prob_stack.pop() <= 0.5:
+            self.home_posession = True
+            self.offense_stats = self.home_stats
+            self.defense_stats = self.away_stats
+        else:
+            self.home_posession = False
+            self.offense_stats = self.away_stats
+            self.defense_stats = self.home_stats
+
+        # Reset ball position
+        self.ball_position = 20
+
+        # Keep playing until someone scores
+        while self.home_score == self.away_score:
+            scored, turnover_position = self.offensive_posession_overtime()
+
+            if scored:
+                if self.home_posession:
+                    self.home_score += 1
+                else:
+                    self.away_score += 1
+                break
+
+            # Change possession
+            self.home_posession = not self.home_posession
+            temp = self.offense_stats
+            self.offense_stats = self.defense_stats
+            self.defense_stats = temp
+
+            # Set ball position after turnover
+            if turnover_position:
+                self.ball_position = 40 - turnover_position
+            else:
+                self.ball_position = 20
+
+    def offensive_posession_overtime(self):
+        """
+        Overtime possession - no clock management, just play until scored or turnover.
+        """
+        turnover_position = False
+        scored = False
+
+        while True:
+            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))):
+                # Take a shot
+                scored, off_recovery, turnover = self.stat_tracker.take_shot(
+                    ball_position=self.ball_position,
+                    prob_stack=self.prob_stack,
+                    offense_stats=self.offense_stats,
+                    defense_stats=self.defense_stats,
+                    home_posession=self.home_posession,
+                    time_left=0,  # OT has no clock display
+                )
+                if turnover:
+                    turnover_position = self.ball_position + (40 - self.ball_position) * self.prob_stack.pop()
+                    break
+                if scored:
+                    break
+                if off_recovery:
+                    pass
+            else:
+                # Pass the ball
+                if np.random.uniform(0, 1) < self.offense_stats["ratio"]:
+                    self.ball_position += min(40 - self.ball_position, np.random.normal(4, 1.5))
+                else:
+                    turnover_position = self.ball_position + min(40 - self.ball_position, np.random.normal(4, 1.5)) * self.prob_stack.pop()
+                    if self.home_posession:
+                        self.stat_tracker.home_turnovers += 1
+                    else:
+                        self.stat_tracker.away_turnovers += 1
+                    break
+
+        return scored, turnover_position
 
 
     def simulate_half(self, second_half=False):
@@ -191,9 +304,9 @@ class GameSimulator():
 
                 # Change who has the ball
                 self.home_posession = not self.home_posession
-                temp = offense_stats
-                offense_stats = defense_stats
-                defense_stats = temp
+                temp = self.offense_stats
+                self.offense_stats = self.defense_stats
+                self.defense_stats = temp
 
                 # Set the position of the ball (if turnover, put at specific location. else, put at the end of the court for an inbound)
                 # we will always be going from 0 -> 40 for ball position.  Dont have one team go 40->0 (too complicated)
@@ -217,7 +330,7 @@ class GameSimulator():
 
         # Evaluate shots and passes until something happens
         while True:
-            if self.prob_stack.pop() < 1 / (1 + np.e ^ (-0.3 * (self.ball_position-34))): # odds of taking a shot
+            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))): # odds of taking a shot
                 try: # Decrement 
                     self.game_clock.decrement(TIME_PER_SHOT)
                 except:
@@ -226,11 +339,12 @@ class GameSimulator():
                 
                 # Take a shot with the stat tracker object
                 scored, off_recovery, turnover = self.stat_tracker.take_shot(
-                    self.prob_stack,
-                    self.offense_stats,
-                    self.defense_stats,
-                    self.home_posession,
-                    self.game_clock.time_left,
+                    ball_position=self.ball_position,
+                    prob_stack=self.prob_stack,
+                    offense_stats=self.offense_stats,
+                    defense_stats=self.defense_stats,
+                    home_posession=self.home_posession,
+                    time_left=self.game_clock.time_left,
                 )
                 if turnover: 
                     # Put in info for where the turnover took place (don't track turnovers due to missed shots)
@@ -242,18 +356,19 @@ class GameSimulator():
                     pass
             else:
                 # Pass the ball
-                if np.random.uniform(0,1) < self.offense_stats["ratio"]:
-                    ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
+                if np.random.uniform(0,1) < self.offense_stats["ratio"]: # type: ignore
+                    self.ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
                     try: # Decrement game clock
                         self.game_clock.decrement(TIME_PER_PASS)
                     except:
                         # Time has run out, immediately take a buzzer beater shot
                         scored, _, _ = self.stat_tracker.take_shot(
-                            self.prob_stack,
-                            self.offense_stats,
-                            self.defense_stats,
-                            self.home_posession,
-                            self.game_clock.time_left,
+                            ball_position=self.ball_position,
+                            prob_stack=self.prob_stack,
+                            offense_stats=self.offense_stats,
+                            defense_stats=self.defense_stats,
+                            home_posession=self.home_posession,
+                            time_left=self.game_clock.time_left,
                         )
                         break
 
@@ -275,37 +390,75 @@ class GameSimulator():
         return scored, turnover_position
     
     def postgame(self):
-        
         # Add win and loss to the correct teams' records
         if self.home_score > self.away_score:
-            self.home_team.win()
-            self.away_team.lose()
+            self.home_team.record_result("W")
+            self.away_team.record_result("L")
         elif self.away_score > self.home_score:
-            self.home_team.lose()
-            self.away_team.win()
-        else: # In case of a tie
-            if self.allow_tie:
-                self.home_team.tie()
-                self.away_team.tie()
-            else:
-                # TODO: Figure out what happens in the case of a tie
-                raise NotImplementedError
-
-
-
-
-        # TODO: Store the score tracker paragraph from the StatTracker
-        # TODO: Save a descriptive one-liner about the game
+            self.home_team.record_result("L")
+            self.away_team.record_result("W")
+        else:  # In case of a tie (only possible if allow_tie=True)
+            self.home_team.record_result("T")
+            self.away_team.record_result("T")
 
         # Update player objects with final offensive stats
         self.home_team.update_offensive_stats(
-            goals_scored=self.stat_tracker.home_goals, 
+            goals_scored=self.stat_tracker.home_goals,
             shots_taken=self.stat_tracker.home_shots
         )
         self.away_team.update_offensive_stats(
             goals_scored=self.stat_tracker.away_goals,
             shots_taken=self.stat_tracker.away_shots
         )
+
+        # Update goalie stats
+        self.home_team.update_goalie_stats(
+            saves=self.stat_tracker.home_goalie_saves,
+            goals_allowed=self.stat_tracker.home_goalie_goals_allowed
+        )
+        self.away_team.update_goalie_stats(
+            saves=self.stat_tracker.away_goalie_saves,
+            goals_allowed=self.stat_tracker.away_goalie_goals_allowed
+        )
+
+        # Build game summary for RecordKeeper
+        self.game_summary = {
+            "home_team": self.home_team.id,
+            "away_team": self.away_team.id,
+            "home_score": self.home_score,
+            "away_score": self.away_score,
+            "went_to_overtime": self.stat_tracker.in_overtime,
+            "scoring_log": self.stat_tracker.get_score_info(),
+            "home_goals_by_player": {
+                self.stat_tracker.home_scorers[i].name: int(self.stat_tracker.home_goals[i])
+                for i in range(len(self.stat_tracker.home_scorers))
+                if self.stat_tracker.home_goals[i] > 0
+            },
+            "away_goals_by_player": {
+                self.stat_tracker.away_scorers[i].name: int(self.stat_tracker.away_goals[i])
+                for i in range(len(self.stat_tracker.away_scorers))
+                if self.stat_tracker.away_goals[i] > 0
+            },
+            # Shots keyed by every player who attempted at least one shot, so
+            # RecordKeeper can build complete per-player game lines (including
+            # players who shot but did not score).
+            "home_shots_by_player": {
+                self.stat_tracker.home_scorers[i].name: int(self.stat_tracker.home_shots[i])
+                for i in range(len(self.stat_tracker.home_scorers))
+                if self.stat_tracker.home_shots[i] > 0
+            },
+            "away_shots_by_player": {
+                self.stat_tracker.away_scorers[i].name: int(self.stat_tracker.away_shots[i])
+                for i in range(len(self.stat_tracker.away_scorers))
+                if self.stat_tracker.away_shots[i] > 0
+            },
+            "home_goalie_saves": self.stat_tracker.home_goalie_saves,
+            "away_goalie_saves": self.stat_tracker.away_goalie_saves,
+        }
+
+    def get_game_summary(self):
+        """Return the game summary dict for RecordKeeper integration."""
+        return getattr(self, 'game_summary', None)
 
 """
 def old__simulate_game(home_team, away_team):
@@ -368,8 +521,10 @@ class GameClock():
         self.time_left = max(0, self.time_left-amount)
         10/self.time_left  # This will cause the game clock to raise an error when it reaches 0
 
+    @staticmethod
     def time_to_str(seconds):
         """ Convert seconds (int) to mm:ss format (str)"""
+        seconds = int(seconds)  # Cast to int in case of float
         mm = seconds // 60
         ss = seconds % 60
         return f"{mm:02d}:{ss:02d}"
@@ -381,7 +536,6 @@ class StatTracker():
     """
     Keeps track of players stats throughout the match
     """
-    # TODO: add in goalie saves and save percentage
     def __init__(self, home_team, home_scorer_stats, away_team, away_scorer_stats):
 
         # Scoring Updates
@@ -389,20 +543,23 @@ class StatTracker():
 
         # what half it is
         self.first_half = True
+        self.in_overtime = False
 
         ## SET UP HOME TEAM INFO
-        self.home_team_name = home_team.name
+        self.home_team_name = home_team.id
         self.home_scorers = list(chain(
-            home_team.starters.forwards, # 3 players
-            home_team.starters.midfielders, # 3 players
-            home_team.bench.forwards, # 2 players
-            home_team.bench.midfielders, # 2 players
+            home_team.starters["Forward"], # 3 players
+            home_team.starters["Midfielder"], # 3 players
+            home_team.bench["Forward"], # 2 players
+            home_team.bench["Midfielder"], # 2 players
             ))
-        
-        # Weight by the minutes played and overall contribution to the offense
-        self.home_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * np.array(home_scorer_stats)
+
+        # Weight by the minutes played and overall contribution to the offense.
+        # Use the offense values from the Player objects on the team, so this
+        # works whether the caller passes in Player objects or simple ratings.
+        home_scorer_offense_values = np.array([player.offense for player in self.home_scorers])
+        self.home_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * home_scorer_offense_values
         self.home_scorers_likelihood = self.home_scorers_likelihood / sum(self.home_scorers_likelihood)
-        self.home_scorers_stats = home_scorer_stats
 
         self.home_goals = np.array([0]*10)
         self.home_shots = np.array([0]*10)
@@ -410,20 +567,25 @@ class StatTracker():
         self.home_off_recov = 0
         self.home_turnovers = 0
 
+        # Goalie stats for home team (saves by away goalie against home offense)
+        self.home_goalie_saves = 0  # saves made by home goalie
+        self.home_goalie_goals_allowed = 0  # goals allowed by home goalie
+
 
         ## SET UP AWAY TEAM INFO
-        self.away_team_name = away_team.name
+        self.away_team_name = away_team.id
         self.away_scorers = list(chain(
-            away_team.starters.forwards, # 3 players
-            away_team.starters.midfielders, # 3 players
-            away_team.bench.forwards, # 2 players
-            away_team.bench.midfielders, # 2 players
+            away_team.starters["Forward"], # 3 players
+            away_team.starters["Midfielder"], # 3 players
+            away_team.bench["Forward"], # 2 players
+            away_team.bench["Midfielder"], # 2 players
             ))
-        
-        # Weight by the minutes played and overall contribution to the offense
-        self.away_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * np.array(away_scorer_stats)
+
+        # Weight by the minutes played and overall contribution to the offense.
+        # Use the offense values from the Player objects on the team.
+        away_scorer_offense_values = np.array([player.offense for player in self.away_scorers])
+        self.away_scorers_likelihood = np.array([45, 45, 45, 45, 45, 45, 22.5, 22.5, 22.5, 22.5]) * away_scorer_offense_values
         self.away_scorers_likelihood = self.away_scorers_likelihood / sum(self.away_scorers_likelihood)
-        self.away_scorers_stats = away_scorer_stats
 
         self.away_goals = np.array([0]*10)
         self.away_shots = np.array([0]*10)
@@ -431,10 +593,19 @@ class StatTracker():
         self.away_off_recov = 0
         self.away_turnovers = 0
 
+        # Goalie stats for away team
+        self.away_goalie_saves = 0  # saves made by away goalie
+        self.away_goalie_goals_allowed = 0  # goals allowed by away goalie
+
     def halftime(self):
         """ Update information """
         self.first_half = False
         self.scoring_tracker.append("--- HALFTIME ---")
+
+    def start_overtime(self):
+        """ Mark the start of overtime """
+        self.in_overtime = True
+        self.scoring_tracker.append("--- OVERTIME (SUDDEN DEATH) ---")
 
     def get_score_info(self):
         info = [f"{self.away_team_name} @ {self.home_team_name}\n", "--- START OF REGULATION ---"]
@@ -443,7 +614,7 @@ class StatTracker():
         return "\n".join(info)
 
 
-    def take_shot(self, prob_stack, offense_stats, defense_stats, home_posession, time_left):
+    def take_shot(self, ball_position, prob_stack, offense_stats, defense_stats, home_posession, time_left):
         """ Handles the shot taking mechanics and records relevant information """
         scored, off_recovery, turnover = False, False, False
 
@@ -451,7 +622,6 @@ class StatTracker():
         if home_posession:
             scorers = self.home_scorers
             likelihood = self.home_scorers_likelihood
-            scorers_stats = self.home_scorers_stats
             goals = self.home_goals
             shots = self.home_shots
             off_recov = self.home_off_recov
@@ -459,34 +629,52 @@ class StatTracker():
         else:
             scorers = self.away_scorers
             likelihood = self.away_scorers_likelihood
-            scorers_stats = self.away_scorers_stats
             goals = self.away_goals
             shots = self.away_shots
             off_recov = self.away_off_recov
             team_name = self.away_team_name
 
         # Who shot the ball
-        idx = np.random.choice(np.arange(len(scorers)), likelihood)
+        idx = np.random.choice(np.arange(len(scorers)), p=likelihood)
         shots[idx] += 1
 
-        if prob_stack.pop() < scorers_stats[idx].offense * np.e ^ (-K * (40-self.ball_position)): # If shot was taken, was it on goal?
+        if prob_stack.pop() < scorers[idx].offense * np.exp(-K * (40-ball_position)): # If shot was taken, was it on goal?
             # Shot taken was on goal
             # Evaluate the result of the shot (weight the offense of the scorer more)
-            if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers_stats[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
+            if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
                 scored = True
                 goals[idx] += 1
+                # Track goal allowed by defending goalie
+                if home_posession:
+                    self.away_goalie_goals_allowed += 1
+                else:
+                    self.home_goalie_goals_allowed += 1
+
+                # Determine period label for scoring tracker
+                if self.in_overtime:
+                    period_label = "OT"
+                elif self.first_half:
+                    period_label = "1st half"
+                else:
+                    period_label = "2nd half"
+
                 self.scoring_tracker.append(
-                    f"{team_name}: {scorers[idx].name} scores with {GameClock.time_to_str(time_left)} in the {'1st' if self.first_half else '2nd'} half!"
+                    f"{team_name}: {scorers[idx].name} scores with {GameClock.time_to_str(time_left)} in the {period_label}!"
                 )
-            elif prob_stack.pop() < 0.1: 
+            elif prob_stack.pop() < 0.1:
                 off_recovery = True
             else:
+                # Shot on goal was saved by the goalie
+                if home_posession:
+                    self.away_goalie_saves += 1
+                else:
+                    self.home_goalie_saves += 1
                 turnover = True
 
         elif prob_stack.pop() < 0.1:
             off_recovery = True
             off_recov += 1
-        else: 
+        else:
             turnover = True
 
         return scored, off_recovery, turnover
@@ -494,7 +682,7 @@ class StatTracker():
 
 
 def odds_of_taking_shot(yard):
-    return 1 / (1 + np.e ^ (-0.3 * (yard-34)))
+    return 1 / (1 + np.exp(-0.3 * (yard-34)))
     
 
 def generate_game_analysis(home_team, visiting_team, individual_performances, results_dump):

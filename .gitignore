@@ -1,0 +1,19 @@
+# Secrets / credentials
+cred.txt
+gs_key.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Editor / tooling / generated
+.claude/
+.vscode/
+graphify-out/
+
+# Scratch
+handball/testing.ipynb

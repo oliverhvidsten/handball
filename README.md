@@ -7,7 +7,12 @@ This github contains the main backend components to run the National Handball As
 Contains constants that specify interactions with the Google Sheet
 
 ### draft_simulator.py
-To be implemented (limited existing functionality is outdated)
+Generates new draft-class players with randomly assigned stats (no name-based modeling, no rating tiers). Each prospect's overall skill is sampled directly from a normal distribution inside `Player.create_new_player` (mean `NEW_PLAYER_MEAN`=5, std `NEW_PLAYER_STD`=1.5, capped at `STAT_CAP`=10 in `simulation_vars.py`), then split into concrete offense/defense/goalie stats.
+- `generate_draft_class`: Top-level entry point — generate a full draft class from a list of names (positions optional/random, seedable for reproducibility).
+- `player_generation`: Generate players from parallel name/position lists.
+- `create_draft_player`: Create a single new player.
+- `assign_random_position`: Weighted random position selection.
+- `load_prospect_names`: Load prospect names from a file (one per line, or a CSV with a `Name` column and optional `Position`).
 
 ### game_simulator.py
 `GameSimulator`: Class that holds all of the relevant data to simulate a single game with two teams (home and away)
@@ -37,7 +42,29 @@ To be implemented (limited existing functionality is outdated)
 - Most methods are pretty straight forward here
 
 ### record_keeper.py
-To be implemented
+`RecordKeeper`: Live, per-game store written during simulation. Holds the game summaries produced by `GameSimulator.get_game_summary()` plus per-player game-by-game lines.
+- `add_game`: Record a finished game, returning a (auto-generated or supplied) `game_id`.
+- `add_player_game_record`: Record a single player's line (goals/shots or saves/goals_allowed) for a game.
+- `get_player_career_stats`: Aggregate a player's stats across every recorded game.
+- `get_recent_games`: Return the most recent N games.
+- `to_json` / `save_json` / `from_json`: Persist and reload the keeper as a single JSON blob.
+
+`GameRecord`: One player's performance in one game (field-player and goalie stats).
+
+`SeasonArchive`: Season-level aggregation layer. One JSON file per season, written by `OperationsHandler` at key milestones (post-draft, post-contracts, end of regular season, end of playoffs). Holds standings, season player stats, trades, injuries, draft picks, contracts, and the playoff bracket.
+
+`PeriodReport` + `RecordKeeper.build_period_report`: Per-team, per-period report of team and individual performances (record, goals, per-player goals/shots/saves). Period results are samples of true ability and live only in these reports — they are never written back to the sheet as ratings.
+
+### operations_handler.py
+`OperationsHandler`: High-level season orchestrator tying the subsystems together.
+- `create_season_schedule(year)`: Generate and persist a 55-week schedule (tags the season year).
+- `run_period_simulation(period)`: Simulate one of five 11-week periods; records games, persists player season stats to team JSON, writes W-L-T standings to the sheet, emits period reports (including an Injury Report), rolls/recovers injuries, and (at period 5) archives the regular season (including injuries). Injured players are substituted next-man-up by position (starter hurt: bench→starter, reserve→bench, injured→reserves; bench hurt: reserve→bench), with the roster reclassification + an "Injured" tag written to the sheet. If there's no healthy reserve at the position, the player plays hurt. Injury durations tick down per game (season-agnostic); a major injury can damage development (young players' growth slows; older players' decline accelerates). On medical recovery the injured tag is cleared but the player stays in reserves — returning them to the lineup is a manual manager action.
+- `restore_player(team, player)`: Manually return a recovered player to their pre-injury slot (a between-periods action), reversing the substitution and updating the sheet. Errors if the player hasn't recovered yet.
+- `run_playoffs(year)`: Seed the top 8 per conference and run a single-elimination bracket (8→4→2 per conference, then a final). Games run on deep-copied teams so canonical records/stats are untouched; results go to a `PlayoffBracket` in the archive.
+- `run_draft(names_path, year, rounds)`: Reverse-standings rookie draft. Prospect names come from a file (one per line, or a CSV with `Name`/optional `Position`). Records `DraftPick` + rookie `ContractRecord` entries to the archive and stores drafted players to a per-year draftees JSON.
+- `execute_trade(package)` / `release_player(team, player)` / `available_free_agents(position)` / `sign_free_agent(team, player)`: User-specified free-agency and trade operations (no AI decision-making) wrapping `TradeHandler` and `FreeAgencyHandler`.
+- `advance_season(year)`: Roll the league over — age every player (which resets their season log) and persist team JSON.
+- `run_full_season(year, names_path)`: Convenience that runs the whole lifecycle: schedule → 5 periods → playoffs → draft → advance. FA/trade operations are performed by callers between phases.
 
 ### sheets_handler.py
 `SheetsHandler`: Class that interacts direcly with the Google Sheet

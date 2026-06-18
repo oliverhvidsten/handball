@@ -9,7 +9,10 @@ Date: 1/25/2025 1:28PM PST
 # Google Sheets formatting values (values in reference to PLAYER_RANGES)
 
 ## General Information
-TEAM_RANGE = "A3:D32"
+TEAM_RANGE = "A3:F32"
+
+# Single cell holding the team's "W-L-T" record string (e.g. "12-4-1").
+RECORD_CELL = "F3"
 
 STARTERS_ROW = 5 # These are the indicies of the first player in the section
 BENCH_ROW = 17
@@ -27,6 +30,7 @@ DRAFT_PICKS_RANGE = "G9:H108"
 
 SHEET_ID_NUM = {
 "Overview": 0,
+"EXAMPLE": 2120674058,
 "Boston": 1041798491,
 "New York": 1573880573,
 "Philadelphia": 1170392677,
@@ -68,3 +72,9 @@ STARTER_RANGE = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 BENCH_RANGE = [12, 13, 14, 15, 16, 17, 18]
 RESERVE_RANGE = [21, 22, 23, 24]
 
+free_agents_ranges = {
+    "Forwards": lambda i : f"A3:C{i}",
+    "Midfielders": lambda i : f"E3:G{i}",
+    "Defenders": lambda i : f"I3:K{i}",
+    "Goalies": lambda i : f"M3:N{i}"
+} 

@@ -14,13 +14,27 @@ def dict_to_str(dictionary):
     str_list = []
     for key, value in dictionary.items():
         if isinstance(value, list):
-            str_list.append(f"{key}: {', '.join(value)}")
+            str_list.append(f"{key}:{', '.join(str(item) for item in value)}")
         elif isinstance(value, (int, float, str, bool, complex, bytes)):
             str_list.append(f"{key}: {value}")
         else:
-            raise Exception(
-                f"utils.dict_to_str() is not implemented for dictionaries holding this data type ({type(value)})"
-            )
+            str_list.append(str(value))
+    return '\n'.join(str_list)
+
+
+def print_roster(dictionary):
+    """
+    Create a string representation of a dictionary
+    """
+    # Note: Currently only implemnted for dictionary values that are primitives or lists (not nested dicts)
+    str_list = []
+    for key, value in dictionary.items():
+        if isinstance(value, list):
+            str_list.append(f"{key}:\n    {'\n    '.join(str(item) for item in value)}")
+        elif isinstance(value, (int, float, str, bool, complex, bytes)):
+            str_list.append(f"{key}: {value}")
+        else:
+            str_list.append(f"{key}:\n    {str(value)}")
     return '\n'.join(str_list)
 
 

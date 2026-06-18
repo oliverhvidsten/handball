@@ -21,256 +21,211 @@ Non-Exhaustive List of Player attributes
     - Injury Risk
 
 """
-import random
 from dataclasses import dataclass
 import numpy as np
 
-from simulation_vars import GAMES_IN_SEASON, MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES
-
-
-@dataclass
-class Player():
-    name: str
-    age: int
-
-    years_in_league: int
-    height: int
-    weight: int
-    position: str
-
-    offense: float
-    defense: float
-    goalie_skill: float
-    max_offense: float
-    max_defense: float
-    max_goalie_skill: float
-    variance: float
-
-    is_injured: bool
-    injury_risk: float
-    injury_log: InjuryReport
-
-    contract_term: int
-    contract_value: int
-    years_remaining: int
-    amount_paid: int
-    rookie_contract: bool
-    restricted_free_agent: bool
-
-    awards_won: list
-
-    current_season_log: dict
-
-
-
-    def create_new_player(cls, name, humor):
-        stats = dict()
-        #Biographical
-        stats["name"] = name
-        stats["age"] = random.normalvariate(27, 3)
-        stats["years_in_league"] = max(0, round(stats["age"] - random.uniform(18,21)))
-        stats["height"] = random.normalvariate(71, 2)
-        stats["weight"] = random.normalvariate(175, 15)
-
-        #Position
-        temp_position = random.uniform(0,1)
-        if temp_position < 0.04:
-            stats["position"] = 'Goalie'
-        elif temp_position < 0.36:
-            stats["position"] = 'Fullback'
-        elif temp_position < 0.52:
-            stats["position"] = 'Center'
-        elif temp_position < 0.68:
-            stats["position"] = 'Pivot'
-        else:
-            stats["position"] = 'Winger'
-
-        #Stat Generation
-        if humor == 0:
-            offense = max(0, random.normalvariate(2, 1.5))
-            defense = max(0, random.normalvariate(2, 1.5))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(2, 1.5))
-            else:
-                goalie_skill = 0.1
-        elif humor == 1:
-            offense = max(0, random.normalvariate(4, 1.75))
-            defense = max(0, random.normalvariate(4, 1.75))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(4, 1.75))
-            else:
-                goalie_skill = 0.1
-        elif humor == 2:
-            offense = max(0, random.normalvariate(6, 1.75))
-            defense = max(0, random.normalvariate(6, 1.75))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(6, 1.75))
-            else:
-                goalie_skill = 0.1
-        else:
-            offense = max(0, random.normalvariate(8, 1.5))
-            defense = max(0, random.normalvariate(8, 1.5))
-            if stats["position"] == 'Goalie':
-                goalie_skill = max(0, random.normalvariate(8, 1.5))
-            else:
-                goalie_skill = 0.1
-
-        stats["offense"] = offense
-        stats["defense"] = defense
-        stats["goalie_skill"] = goalie_skill
-
-        stats["max_offense"] = max(offense, offense + random.normalvariate(4, 0.5))
-        stats["max_defense"] = max(defense, defense + random.normalvariate(4, 0.5))
-        stats["max_goalie_skill"] = max(goalie_skill, goalie_skill + random.normalvariate(4, 0.5))
-
-        stats["variance"] = max(0, random.normalvariate(1.5, 0.5))
-        
-        #Injury
-        stats["isinjured"] = False
-        stats["injury_risk"] = max(0.0005, random.normalvariate(0.001, 0.001))
-        stats["injury_log"] = InjuryReport(active_injuries=False, injuries=list())
-
-        #Contract: NEEDS ELABORATION
-        stats["contract_term"] = 0
-        stats["contract_value"] = 0
-        stats["remaining_years"] = 0
-        stats["amount_paid"] = 0
-        stats["rookie_contract"] = False
-        stats["restricted_free_agent"] = False
-
-        #Trajectory
-
-        #Misc
-        stats["current_season_log"] = {
-            "shots_taken": list(), # list of number of shots taken in each game (to get a shooting percentage)
-            "goals": list(), # list of number of goals scored in each game
-            "performances": list(), # list of overall game performances (contributions to overall team score, bench players scaled to full contributions)
-        }
-        stats["awards_won"] = []
-
-        return cls(*stats)
-    
-    def to_dict(self):
-        """ Prepare object to be saved as a json"""
-
-        return {
-            "name": self.name,
-            "age": self.age,
-            "years_in_league": self.years_in_league,
-            "height": self.height,
-            "weight": self.weight,
-            "position": self.position,
-            "offense": self.offense,
-            "defense": self.defense,
-            "goalie_skill": self.goalie_skill,
-            "max_offense": self.max_offense,
-            "max_defense": self.max_defense,
-            "max_goalie_skill": self.max_goalie_skill,
-            "variance": self.variance,
-            "is_injured": self.is_injured,
-            "injury_risk": self.injury_risk,
-            "injury_log": self.injury_log.to_dict(),
-            "contract_term": self.contract_term,
-            "contract_value": self.contract_value,
-            "years_remaining": self.years_remaining,
-            "amount_paid": self.amount_paid,
-            "rookie_contract": self.rookie_contract,
-            "restricted_free_agent": self.restricted_free_agent,
-            "awards_won": self.awards_won
-        }
-    
-    def from_dict(cls, d):
-        """ Create player object from dictionary representation """
-        d["injury_log"] = InjuryReport.from_dict(d["injury_log"])
-        return cls(*d)
-
-
-    def advance_year(self):
-        """ update information when year is advanced """
-        self.age += 1
-        self.years_in_league += 1
-        self.years_remaining -= 1
-    
-    def injure(self, year, injury_type):
-        """ injure player """
-        self.is_injured = True
-        self.has_been_injured = True
-        self.year_of_injury.append(year) ###############
-        self.injury_log.add()
-        ###Injury type and duration###############
-
-    @property
-    def total_season_goals(self):
-        return sum(self.current_season_log["goals"])
-
-
-
-
+from handball.simulation_vars import (
+    MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES,
+)
 
 
 @dataclass
 class InjuryReport():
 
-    active_injury = bool
-    injuries: list # list of tuples: (year, injury_type, injury duration, start_game, current)
+    active_injury: bool
+    injuries: list  # records: [year, injury_type, duration, games_remaining, current]
 
     def __repr__(self):
         str_dump = [f"This player has sustained {len(self.injuries)} injuries."]
-        for injury in self.injuries:
-            if injury[3] + injury[2] >= GAMES_IN_SEASON:
-                end_date = "END OF SEASON"
-            elif injury[4]:
-                end_date = "CURRENT"
-            else:
-                end_date = f"Game {injury[3] + injury[2]}"
-            str_dump.append(f"{injury[0]}: {injury} (Game {injury[3]} – {end_date})")
+        for year, itype, duration, remaining, current in self.injuries:
+            status = f"{remaining} games remaining" if current else "recovered"
+            str_dump.append(f"{year}: {itype} (duration {duration}, {status})")
         return "\n".join(str_dump)
-
 
     def __len__(self):
         return len(self.injuries)
-    
-    def add(self, year, injury_type, start_game):
-        """ Add an injury to the player's report """
+
+    def add(self, year, injury_type):
+        """
+        Add an injury to the player's report. Duration is sampled in *games*
+        from a severity-based distribution; the injury then ticks down one game
+        at a time via tick(). Returns the duration, or False if already injured.
+        """
         if self.active_injury:
-            return False # A player should not be able to get reinjured (since they are not playing)
+            return False  # can't be re-injured while already out
+
         self.active_injury = True
-        
-        # Determine injury duration
         if injury_type in MINOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(2, 1)))
+            duration = int(np.round(np.random.normal(2, 1)))
         elif injury_type in MODERATE_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(5, 2.5)))
+            duration = int(np.round(np.random.normal(5, 2)))
         elif injury_type in MAJOR_INJURIES:
-            injury_duration = max(0, np.round(np.random.normal(10, 4)))
+            duration = int(np.round(np.random.normal(10, 3)))
+        else:
+            duration = 1
+        duration = max(1, duration)  # every injury sidelines at least one game
 
-        # Add the injury description
-        self.injuries.append(
-            (year, injury_type, injury_duration, start_game, True)
-        )
-    
-        return injury_duration
-    
+        # [year, type, duration, games_remaining, current]
+        self.injuries.append([year, injury_type, duration, duration, True])
+        return duration
 
-    def update(self, game_number):
-        """ Update status of an active injury """
+    def tick(self):
+        """
+        Advance one game: decrement the active injury's games-remaining and
+        mark it recovered once it reaches zero. Season-agnostic (no dependence
+        on an absolute game counter), so injuries carry across periods/seasons.
+        """
         if self.active_injury:
-            if game_number > (self.injuries[-1][2] + self.injuries[-1][3]):
-                self.injuries[-1][4] = False
+            last = self.injuries[-1]
+            last[3] = max(0, last[3] - 1)  # games_remaining
+            if last[3] <= 0:
+                last[4] = False
                 self.active_injury = False
 
+    @property
+    def games_remaining(self):
+        """Games left on the current injury (0 if healthy)."""
+        if self.active_injury and self.injuries:
+            return self.injuries[-1][3]
+        return 0
 
     def to_dict(self):
-        """ Prepare object to be saved as a JSON, tuples are not supported by JSON """
+        """ Prepare object to be saved as JSON. """
         return {
             "active_injury": self.active_injury,
             "injuries": [list(injury) for injury in self.injuries]
         }
-    
-    def from_dict(cls, d):
-        """ Create injury report object from dicionary that was previouly jsonified
-            tuples are not JSON supported, so they will have been made into tuples """
-        d["injuries"] = [tuple(injury) for injury in d["injuries"]]
-        return cls(*d)
 
+    @classmethod
+    def from_dict(cls, d):
+        """ Create injury report object from a previously jsonified dictionary.
+            Records are kept as mutable lists so tick() can update them. """
+        d["injuries"] = [list(injury) for injury in d["injuries"]]
+        return cls(**d)
+
+
+@dataclass
+class PlayerInfo():
+    """
+    Class that holds all of the information held in the google sheet.
+    Lighter class to be used when full player class is not necessary
+
+    Note: position refers to original position, not positions currently being played
+    """
+    name: str
+    position: str
+    age: int
+    contract: str
+    injured: bool
+    offense: float
+    defense: float
+    goalie_skill: float
+
+    def __str__(self):
+        return f"{self.name} (pos={self.position}, age={self.age}, contract={self.contract}, injured={self.injured})"
+    def __repr__(self):
+        return self.__str__()
+    def __eq__(self, other):
+        if not isinstance(other, PlayerInfo):
+            return False
+        return self.name == other.name and self.position == other.position and self.age == other.age and self.contract == other.contract and self.injured == other.injured and self.offense == other.offense and self.defense == other.defense and self.goalie_skill == other.goalie_skill
+    def __hash__(self):
+        return hash((self.name, self.position, self.age, self.contract, self.injured, self.offense, self.defense, self.goalie_skill))
+
+    @classmethod
+    def from_sheet(cls, sheet_row:list, notes_dict:dict):
+        """
+        Create a PlayerInfo object from the information derived from the google sheet.
+        Notably, this contains the players name, stats, and any info in the notes section
+        Tests for this should be rigorous about what is found in the notes section as this is 
+        not meant to be flexible
+        """
+        name = sheet_row[1]
+        note = notes_dict[name]
+ 
+        lines = note.split("\n")
+        attributes = dict()
+        for line in lines:
+            attr_name, attr_value = line.lower().split(" ", 1) # split on first space
+
+            if attr_name[:-1] in ["age"]: # attributes to be casted to int
+                attr_value = int(attr_value)
+            elif attr_name[:-1] in ["injured"]: # attributes to be casted to bool
+                attr_value = bool(attr_value)
+            attributes[attr_name[:-1]] = attr_value
+
+        # Assign stats (given position information)
+        if attributes["position"].lower() == "goalie":
+            attributes["offense"] = 0.1
+            attributes["defense"] = 0.1
+            attributes["goalie_skill"] = sheet_row[2]
+        else:
+            attributes["offense"] = sheet_row[2]
+            attributes["defense"] = sheet_row[3]
+            attributes["goalie_skill"] = 0.1
+
+        return cls(name=name,**attributes)
+    
+    def to_sheet(self):
+        """
+        Return the same info out as the from_sheet method requests
+        Once again, this is not a flexible method
+        """
+        stats = (self.offense, self.defense, self.goalie_skill)
+        note = "\n".join([
+            f"Age: {self.age}",
+            f"Position: {self.position}",
+            f"Contract: {self.contract}", 
+            f"Injured: {self.injured}"
+            ])
         
+        return self.name, note, stats
+    
+    @classmethod
+    def from_Player(cls, player_obj):
+        """
+        Create PlayerInfo object from Player object
+        """
+
+
+        return PlayerInfo(
+            name=player_obj.name,
+            position=player_obj.position,
+            age=player_obj.age,
+            contract=
+            f"{player_obj.contract_term}/${player_obj.contract_value}{' (R)' if player_obj.rookie_contract else ''}",
+            injured=player_obj.is_injured,
+            offense=player_obj.offense,
+            defense=player_obj.defense,
+            goalie_skill=player_obj.goalie_skill
+        )
+
+
+    def update_from_Player(self, player_obj):
+        """
+        Update PlayerInfo attributes (name and position will never be updated)
+        """
+        self.age = player_obj.age
+        self.contract = f"{player_obj.contract_term}/${player_obj.contract_value}"
+        self.injured = player_obj.is_injured
+
+        self.offense = player_obj.offense
+        self.defense = player_obj.defense
+        self.goalie_skill = player_obj.goalie_skill
+
+    def name_and_stats(self, is_goalie=False):
+        """
+        Return the player's name and stats
+        """
+        if is_goalie:
+            return [self.name, round(self.goalie_skill, 2)]
+        else:
+            return [self.name, round(self.offense, 2), round(self.defense, 2)]
+        
+    def get_notes(self):
+        return"\n".join([
+            f"Age: {self.age}",
+            f"Position: {self.position}",
+            f"Contract: {self.contract}", 
+            f"Injured: {self.injured}"
+            ])
