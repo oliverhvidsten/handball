@@ -10,12 +10,39 @@ Date: 1/20/2025 12:32PM PST
 # Pass length correlates with amount of time off clock
 import numpy as np
 from itertools import chain
+from typing import Any, Protocol
 
 from handball.utils import ProbabilityStack
-from handball.teams import Team
 from handball.simulation_vars import (
     REGULATION_TIME, K, TIME_PER_PASS, TIME_PER_SHOT, MAIN_STAT, SECONDARY_STAT, MIDDIE_STATS, TIME_AFTER_SCORE, STARTER_MINUTES, BENCH_MINUTES
     )
+
+
+class _Roster(Protocol):
+    """A starters/bench group: position lists of Player-like objects."""
+    forwards: Any
+    midfielders: Any
+    defense: Any
+    goalie: Any
+
+
+class Team(Protocol):
+    """Structural interface GameSimulator needs from a team.
+
+    Satisfied at runtime by game_compat.TeamView over a domain.Team. (This
+    replaced a concrete import of the now-removed legacy teams.Team, which
+    exposed the same surface.)
+    """
+    starters: _Roster
+    bench: _Roster
+    team_name: str
+    def win(self) -> None: ...
+    def lose(self) -> None: ...
+    def tie(self) -> None: ...
+    def update_performances(self, performances: Any) -> None: ...
+    def update_offensive_stats(self, goals_scored: Any, shots_taken: Any) -> None: ...
+    def update_goalie_stats(self, saves: Any, goals_allowed: Any) -> None: ...
+
 
 class GameSimulator():
     def __init__(self, home_team:Team, away_team:Team, allow_tie=False):

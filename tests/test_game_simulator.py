@@ -6,10 +6,112 @@ Date: 3/1/2026
 """
 import pytest
 import json
+from dataclasses import dataclass
+
 from handball.game_simulator import GameSimulator, GameClock, StatTracker
-from handball.teams import Team, TeamInfo, Subroster
 from handball.players import Player, InjuryReport
 from handball.simulation_vars import REGULATION_TIME
+
+
+# --- Test doubles -----------------------------------------------------------
+# GameSimulator only needs the structural team surface (see game_simulator.Team
+# Protocol). These doubles reproduce the now-removed legacy teams.Subroster /
+# teams.Team behavior the simulator was written against, so these unit tests can
+# exercise the simulator's internals without the deleted legacy module. The
+# production v2 path is covered separately by test_game_adapter.py (domain.Team
+# via game_compat.TeamView).
+@dataclass
+class Subroster:
+    forwards: list
+    midfielders: list
+    defense: list
+    goalie: Player
+
+
+@dataclass
+class Team:
+    team_name: str
+    starters: Subroster
+    bench: Subroster
+    reserves: list
+    draft_picks: dict | None
+    record: list  # [wins, losses, ties]
+
+    def win(self):
+        self.record[0] += 1
+
+    def lose(self):
+        self.record[1] += 1
+
+    def tie(self):
+        self.record[2] += 1
+
+    def update_performances(self, performances):
+        """Add the individual game performances to the players' objects."""
+        for i, performance in enumerate(performances):
+            if i < 3:
+                self.starters.forwards[i].current_season_log["performances"].append(performance)
+            elif i < 6:
+                self.starters.midfielders[i-3].current_season_log["performances"].append(performance)
+            elif i < 9:
+                self.starters.defense[i-6].current_season_log["performances"].append(performance)
+            elif i < 11:
+                self.bench.forwards[i-9].current_season_log["performances"].append(performance)
+            elif i < 13:
+                self.bench.midfielders[i-11].current_season_log["performances"].append(performance)
+            elif i < 15:
+                self.bench.defense[i-13].current_season_log["performances"].append(performance)
+            elif i == 15:
+                self.starters.goalie.current_season_log["performances"].append(performance)
+            else:
+                self.bench.goalie.current_season_log["performances"].append(performance)
+        for reserve in self.reserves:
+            reserve.current_season_log["performances"].append(0)
+
+    def update_offensive_stats(self, goals_scored, shots_taken):
+        """Record goals/shots for eligible scorers; 0 for everyone else."""
+        for i, (goals, shots) in enumerate(zip(goals_scored, shots_taken)):
+            if i < 3:
+                self.starters.forwards[i].current_season_log["goals"].append(goals)
+                self.starters.forwards[i].current_season_log["shots_taken"].append(shots)
+            elif i < 6:
+                self.starters.midfielders[i-3].current_season_log["goals"].append(goals)
+                self.starters.midfielders[i-3].current_season_log["shots_taken"].append(shots)
+            elif i < 8:
+                self.bench.forwards[i-6].current_season_log["goals"].append(goals)
+                self.bench.forwards[i-6].current_season_log["shots_taken"].append(shots)
+            else:
+                self.bench.midfielders[i-8].current_season_log["goals"].append(goals)
+                self.bench.midfielders[i-8].current_season_log["shots_taken"].append(shots)
+
+        for defender in self.starters.defense:
+            defender.current_season_log["goals"].append(0)
+            defender.current_season_log["shots_taken"].append(0)
+        for defender in self.bench.defense:
+            defender.current_season_log["goals"].append(0)
+            defender.current_season_log["shots_taken"].append(0)
+
+        self.starters.goalie.current_season_log["goals"].append(0)
+        self.starters.goalie.current_season_log["shots_taken"].append(0)
+        self.bench.goalie.current_season_log["goals"].append(0)
+        self.bench.goalie.current_season_log["shots_taken"].append(0)
+
+        for reserve in self.reserves:
+            reserve.current_season_log["goals"].append(0)
+            reserve.current_season_log["shots_taken"].append(0)
+
+    def update_goalie_stats(self, saves: int, goals_allowed: int):
+        """Split goalie stats 60/40 between starter and bench (halftime swap)."""
+        starter_saves = int(round(saves * 0.6))
+        bench_saves = saves - starter_saves
+        starter_goals_allowed = int(round(goals_allowed * 0.6))
+        bench_goals_allowed = goals_allowed - starter_goals_allowed
+
+        self.starters.goalie.current_season_log["saves"].append(starter_saves)
+        self.starters.goalie.current_season_log["goals_allowed"].append(starter_goals_allowed)
+        self.bench.goalie.current_season_log["saves"].append(bench_saves)
+        self.bench.goalie.current_season_log["goals_allowed"].append(bench_goals_allowed)
+# ----------------------------------------------------------------------------
 
 
 @pytest.fixture
