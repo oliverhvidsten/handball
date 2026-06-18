@@ -1,11 +1,15 @@
 """
 Name: test_players.py
-Description: Holds unit tests for functions in players.py
+Description: Unit tests for domain.Player lifecycle/generation, plus the shared
+    value objects that still live in players.py (InjuryReport, PlayerInfo).
+    Player serialization is the repository's job now and is covered by
+    test_repository.py.
 Author: Oliver Hvidsten
 Date: 8/3/2025 8:11PM PST
 """
 import pytest
-from handball.players import Player, PlayerInfo, InjuryReport
+from handball.domain import Player
+from handball.players import PlayerInfo, InjuryReport
 
 
 # ======================================================================
@@ -15,6 +19,7 @@ from handball.players import Player, PlayerInfo, InjuryReport
 @pytest.fixture
 def player_obj():
     return Player(
+        id="test-player",
         name="Test Player",
         age=28,
         years_in_league=2,
@@ -41,7 +46,6 @@ def player_obj():
         rookie_contract=False,
         restricted_free_agent=False,
         awards_won=list(),
-        current_season_log=dict()
     )
 
 
@@ -49,7 +53,7 @@ def player_obj():
 def young_player():
     """Player well before peak age — triggers growth branch."""
     return Player(
-        name="Young Gun", age=20, years_in_league=1, height=70, weight=170,
+        id="young-gun", name="Young Gun", age=20, years_in_league=1, height=70, weight=170,
         position="Forward", offense=4.0, defense=3.0, goalie_skill=0.1,
         max_offense=8.0, max_defense=6.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27, decline_age=30, decline_rate=0.15,
@@ -60,7 +64,7 @@ def young_player():
 def peak_player():
     """Player between peak and decline — triggers noisy plateau branch."""
     return Player(
-        name="Peak Pro", age=28, years_in_league=6, height=72, weight=185,
+        id="peak-pro", name="Peak Pro", age=28, years_in_league=6, height=72, weight=185,
         position="Midfielder", offense=7.0, defense=7.0, goalie_skill=0.1,
         max_offense=8.0, max_defense=8.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27, decline_age=32, decline_rate=0.15,
@@ -71,7 +75,7 @@ def peak_player():
 def old_player():
     """Player past decline age — triggers decline branch."""
     return Player(
-        name="Old Timer", age=33, years_in_league=12, height=71, weight=180,
+        id="old-timer", name="Old Timer", age=33, years_in_league=12, height=71, weight=180,
         position="Defense", offense=5.0, defense=7.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=8.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27, decline_age=30, decline_rate=0.20,
@@ -81,7 +85,7 @@ def old_player():
 @pytest.fixture
 def goalie_player():
     return Player(
-        name="Goalie Guy", age=31, years_in_league=8, height=74, weight=195,
+        id="goalie-guy", name="Goalie Guy", age=31, years_in_league=8, height=74, weight=195,
         position="Goalie", offense=0.1, defense=0.1, goalie_skill=7.5,
         max_offense=0.1, max_defense=0.1, max_goalie_skill=9.0, variance=0.3,
         peak_age=28, decline_age=31, decline_rate=0.12,
@@ -89,33 +93,25 @@ def goalie_player():
 
 
 # ======================================================================
-# Player — serialization
+# Player — equality (dataclass-generated)
 # ======================================================================
 
-def test_data_storing(player_obj):
-    d = player_obj.to_dict()
-    new_player_obj = Player.from_dict(d)
-    assert player_obj == new_player_obj
+def test_eq_with_none(player_obj):
+    assert player_obj != None  # noqa: E711
 
 
-def test_round_trip_with_injuries():
-    """Serialization preserves injury log entries."""
-    p = Player(
-        name="Hurt", age=25, years_in_league=3, height=70, weight=170,
-        position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
-        max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
-    )
-    p.injure(2025, "Knee (Strain)")
-    d = p.to_dict()
-    loaded = Player.from_dict(d)
-    assert len(loaded.injury_log.injuries) == 1
-    assert loaded.is_injured is True
+def test_eq_with_wrong_type(player_obj):
+    assert player_obj != "not a player"
+
+
+def test_eq_different_players(player_obj, young_player):
+    assert player_obj != young_player
 
 
 def test_advance_year_resets_season_log():
     """A new season starts with a clean stat sheet."""
     p = Player(
-        name="Ager", age=25, years_in_league=3, height=70, weight=170,
+        id="ager", name="Ager", age=25, years_in_league=3, height=70, weight=170,
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
     )
@@ -131,49 +127,13 @@ def test_advance_year_resets_season_log():
     assert p.current_season_log["saves"] == []
 
 
-def test_round_trip_with_season_log():
-    """Season log data survives serialization."""
-    p = Player(
-        name="Logger", age=25, years_in_league=3, height=70, weight=170,
-        position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
-        max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
-    )
-    p.current_season_log["goals"].extend([1, 0, 2])
-    p.current_season_log["shots_taken"].extend([3, 2, 5])
-    p.current_season_log["performances"].extend([8.5, 4.2, 9.1])
-    d = p.to_dict()
-    loaded = Player.from_dict(d)
-    assert loaded.current_season_log["goals"] == [1, 0, 2]
-
-
-# ======================================================================
-# Player — __eq__ edge cases
-# ======================================================================
-
-def test_eq_with_none(player_obj):
-    assert player_obj != None  # noqa: E711
-
-
-def test_eq_with_wrong_type(player_obj):
-    assert player_obj != "not a player"
-
-
-def test_eq_different_players(player_obj, young_player):
-    assert player_obj != young_player
-
-
-def test_eq_identical_copy(player_obj):
-    copy = Player.from_dict(player_obj.to_dict())
-    assert player_obj == copy
-
-
 # ======================================================================
 # Player — create_new_player for all positions
 # ======================================================================
 
 @pytest.mark.parametrize("position", ["Forward", "Midfielder", "Defense", "Goalie"])
 def test_create_new_player_all_positions(position):
-    p = Player.create_new_player(f"Test {position}", position)
+    p = Player.create_new_player(f"test-{position}", f"Test {position}", position)
     assert p.position == position
     assert 0 <= p.offense <= 10
     assert 0 <= p.defense <= 10
@@ -192,7 +152,7 @@ def test_create_new_player_all_positions(position):
 
 def test_create_new_player_overall_distribution():
     """Overall skill is sampled from N(5, 1.5), floored at 0 and capped at 10."""
-    players = [Player.create_new_player("DistTest", "Forward") for _ in range(300)]
+    players = [Player.create_new_player(f"dist-{i}", "DistTest", "Forward") for i in range(300)]
     # All stats must respect the [0, 10] cap.
     for p in players:
         assert 0 <= p.offense <= 10
@@ -241,7 +201,7 @@ def test_update_stats_goalie_decline(goalie_player):
 def test_update_stats_capped_at_10():
     """Stats must never exceed 10.0."""
     p = Player(
-        name="Capped", age=20, years_in_league=1, height=70, weight=170,
+        id="capped", name="Capped", age=20, years_in_league=1, height=70, weight=170,
         position="Forward", offense=9.9, defense=9.9, goalie_skill=0.1,
         max_offense=15.0, max_defense=15.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27, decline_age=30, decline_rate=0.15,
@@ -265,7 +225,7 @@ def test_advance_year(player_obj):
 def test_advance_year_years_remaining_goes_negative():
     """Contract can expire (years_remaining goes to -1)."""
     p = Player(
-        name="Expiring", age=25, years_in_league=3, height=70, weight=170,
+        id="expiring", name="Expiring", age=25, years_in_league=3, height=70, weight=170,
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
         years_remaining=0,
@@ -304,7 +264,7 @@ def test_update_contract_non_rookie(player_obj):
 
 def test_total_season_goals_empty():
     p = Player(
-        name="NoGoals", age=25, years_in_league=1, height=70, weight=170,
+        id="nogoals", name="NoGoals", age=25, years_in_league=1, height=70, weight=170,
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
     )
@@ -313,7 +273,7 @@ def test_total_season_goals_empty():
 
 def test_total_season_goals_with_data():
     p = Player(
-        name="Scorer", age=25, years_in_league=1, height=70, weight=170,
+        id="scorer", name="Scorer", age=25, years_in_league=1, height=70, weight=170,
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
     )
@@ -332,7 +292,7 @@ def test_injury(player_obj):
 
 
 def test_random_player_attribute():
-    p = Player.create_new_player("Harry Boxin", "Forward")
+    p = Player.create_new_player("harry-boxin", "Harry Boxin", "Forward")
     assert p.name == "Harry Boxin"
     assert p.years_in_league == 0
     assert not p.is_injured
@@ -426,7 +386,7 @@ class TestInjuryReport:
 
 def test_player_tick_injury_recovers():
     p = Player(
-        name="Hurt", age=25, years_in_league=3, height=70, weight=170,
+        id="hurt", name="Hurt", age=25, years_in_league=3, height=70, weight=170,
         position="Forward", offense=5.0, defense=4.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
     )
@@ -440,7 +400,7 @@ def test_player_tick_injury_recovers():
 
 def test_apply_injury_impact_young_lowers_ceiling():
     young = Player(
-        name="Kid", age=20, years_in_league=1, height=70, weight=170,
+        id="kid", name="Kid", age=20, years_in_league=1, height=70, weight=170,
         position="Forward", offense=4.0, defense=3.0, goalie_skill=0.1,
         max_offense=8.0, max_defense=6.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27,
@@ -453,7 +413,7 @@ def test_apply_injury_impact_young_lowers_ceiling():
 
 def test_apply_injury_impact_old_accelerates_decline():
     old = Player(
-        name="Vet", age=33, years_in_league=12, height=71, weight=180,
+        id="vet", name="Vet", age=33, years_in_league=12, height=71, weight=180,
         position="Defense", offense=5.0, defense=7.0, goalie_skill=0.1,
         max_offense=6.0, max_defense=8.0, max_goalie_skill=0.1, variance=0.5,
         peak_age=27, decline_age=30, decline_rate=0.2,
@@ -470,7 +430,7 @@ class TestPlayerInfo:
     @pytest.fixture
     def sample_player(self):
         return Player(
-            name="Info Test", age=26, years_in_league=4, height=71, weight=180,
+            id="info-test", name="Info Test", age=26, years_in_league=4, height=71, weight=180,
             position="Midfielder", offense=6.5, defense=5.5, goalie_skill=0.1,
             max_offense=8.0, max_defense=7.0, max_goalie_skill=0.1, variance=0.5,
             contract_term=3, contract_value=12, rookie_contract=False,
@@ -480,7 +440,7 @@ class TestPlayerInfo:
     @pytest.fixture
     def rookie_player(self):
         return Player(
-            name="Rookie Star", age=19, years_in_league=0, height=69, weight=165,
+            id="rookie-star", name="Rookie Star", age=19, years_in_league=0, height=69, weight=165,
             position="Forward", offense=4.0, defense=2.0, goalie_skill=0.1,
             max_offense=8.0, max_defense=5.0, max_goalie_skill=0.1, variance=0.5,
             contract_term=2, contract_value=5, rookie_contract=True,

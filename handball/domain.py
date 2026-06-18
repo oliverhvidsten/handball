@@ -98,6 +98,94 @@ class Player:
     awards_won: list = field(default_factory=list)
     current_season_log: dict = field(default_factory=_new_season_log)
 
+    # -- construction ------------------------------------------------------
+    @classmethod
+    def create_new_player(cls, id: PlayerId, name: str, position: str) -> "Player":
+        """Create a fresh draft-class player with a stable `id`. Overall skill is
+        sampled from N(NEW_PLAYER_MEAN, NEW_PLAYER_STD) and split into
+        offense/defense by position (ported from the legacy players.Player)."""
+        stats: dict = {}
+        # Biographical
+        stats["name"] = name
+        stats["age"] = int(random.uniform(18, 23))
+        stats["years_in_league"] = 0
+        stats["height"] = int(round(random.normalvariate(71, 2)))
+        stats["weight"] = int(round(random.normalvariate(175, 15)))
+
+        # Overall score: sampled, floored at 0, capped at STAT_CAP.
+        overall = min(STAT_CAP, max(0, random.normalvariate(NEW_PLAYER_MEAN, NEW_PLAYER_STD)))
+
+        def split_overall(overall, is_midfielder):
+            """Split the overall score into offense/defense scores."""
+            std = 0.5 if is_midfielder else 1
+            first_score = min(10, max(0, random.uniform(overall, std)))
+            # Clamp the complement to [0, 10]; for a low overall the raw
+            # complement (2*overall - first_score) can go negative.
+            second_score = min(10, max(0, (2 * overall) - first_score))
+            scores = [first_score, second_score]
+            if is_midfielder:
+                random.shuffle(scores)
+            else:
+                scores.sort(reverse=True)
+            return scores[0], scores[1]
+
+        # Position
+        stats["position"] = position
+        match position:
+            case "Goalie":
+                offense, defense = 0.1, 0.1
+                goalie_skill = overall
+            case "Defense":
+                defense, offense = split_overall(overall, is_midfielder=False)
+                goalie_skill = 0.1
+            case "Forward":
+                offense, defense = split_overall(overall, is_midfielder=False)
+                goalie_skill = 0.1
+            case "Midfielder":
+                offense, defense = split_overall(overall, is_midfielder=True)
+                goalie_skill = 0.1
+
+        # Hard cap visible skill at 10; max scores may exceed 10 (affect growth).
+        stats["offense"] = min(10.0, offense)
+        stats["defense"] = min(10.0, defense)
+        stats["goalie_skill"] = min(10.0, goalie_skill)
+
+        stats["max_offense"] = max(offense, offense + random.normalvariate(2, 0.75))
+        stats["max_defense"] = max(defense, defense + random.normalvariate(2, 0.75))
+        stats["max_goalie_skill"] = min(10.0, max(goalie_skill, goalie_skill + random.normalvariate(2, 0.75)))
+
+        if position == "Goalie":
+            stats["max_offense"] = 0.1
+            stats["max_defense"] = 0.1
+        else:
+            stats["max_goalie_skill"] = 0.1
+
+        stats["variance"] = max(0, random.normalvariate(0.5, 0.5))
+        stats["decline_rate"] = max(0.01, random.normalvariate(0.15, 0.1))
+        stats["peak_age"] = int(random.normalvariate(25, sigma=1))
+        stats["decline_age"] = stats["peak_age"] + int(random.uniform(1, 4))
+
+        # Injury
+        stats["is_injured"] = False
+        stats["injury_risk"] = max(0.0005, random.normalvariate(0.001, 0.001))
+        stats["injury_log"] = InjuryReport(active_injury=False, injuries=[])
+
+        # Contract
+        stats["contract_term"] = 0
+        stats["contract_value"] = 0
+        stats["years_remaining"] = 0
+        stats["amount_paid"] = 0
+        stats["rookie_contract"] = True
+        stats["restricted_free_agent"] = True
+
+        stats["current_season_log"] = _new_season_log()
+        stats["awards_won"] = []
+
+        player = cls(id=id, **stats)
+        # Boost above-18 players a bit (linear branch -> no RNG consumed).
+        player.update_stats(player.age - 18, rate_scale=0.25)
+        return player
+
     # -- public projection -------------------------------------------------
     def public_view(self) -> PlayerPublicView:
         contract = f"{self.contract_term}/${self.contract_value}" + (

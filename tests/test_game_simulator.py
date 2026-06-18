@@ -9,7 +9,8 @@ import json
 from dataclasses import dataclass
 
 from handball.game_simulator import GameSimulator, GameClock, StatTracker
-from handball.players import Player, InjuryReport
+from handball.domain import Player
+from handball.players import InjuryReport
 from handball.simulation_vars import REGULATION_TIME
 
 
@@ -119,6 +120,7 @@ def sample_player():
     """Create a sample player for testing"""
     def _make_player(name, position, offense=5.0, defense=5.0, goalie_skill=0.1):
         return Player(
+            id=name,
             name=name,
             age=25,
             years_in_league=3,

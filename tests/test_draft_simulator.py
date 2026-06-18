@@ -14,7 +14,7 @@ from handball.draft_simulator import (
     generate_draft_class,
     load_prospect_names,
 )
-from handball.players import Player
+from handball.domain import Player
 
 
 class TestPositionAssignment:

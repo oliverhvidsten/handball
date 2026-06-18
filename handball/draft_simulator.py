@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from handball.players import Player
+from handball.domain import Player
 
 
 # Valid player positions (must match the cases in Player.create_new_player).
@@ -87,22 +87,30 @@ def assign_random_position(position_weights=None):
     return random.choices(positions, weights=probs, k=1)[0]
 
 
-def create_draft_player(name, position):
+def _slug(text: str) -> str:
+    """Lowercase, hyphenated id fragment from a name."""
+    return "-".join(str(text).lower().split())
+
+
+def create_draft_player(name, position, id=None):
     """
     Create a single new draft-class Player with randomly assigned stats.
 
     Input:
         1. name (str): the player's name.
         2. position (str): one of ``POSITIONS``.
+        3. id (str | None): stable domain id. Defaults to a slug of the name;
+           callers that own canonical ids (e.g. the draft service, which keys
+           by holding team) pass their own.
 
     Output:
-        (Player): a newly generated Player object.
+        (Player): a newly generated domain.Player object.
     """
     if position not in POSITIONS:
         raise ValueError(
             f"Unknown position '{position}'. Expected one of {POSITIONS}."
         )
-    return Player.create_new_player(name=name, position=position)
+    return Player.create_new_player(id=id or _slug(name), name=name, position=position)
 
 
 def player_generation(names_list, position_list):
@@ -123,8 +131,8 @@ def player_generation(names_list, position_list):
             f"(got {len(names_list)} and {len(position_list)})."
         )
     return [
-        create_draft_player(name, position)
-        for name, position in zip(names_list, position_list)
+        create_draft_player(name, position, id=f"{_slug(name)}-{i}")
+        for i, (name, position) in enumerate(zip(names_list, position_list))
     ]
 
 

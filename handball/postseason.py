@@ -32,7 +32,7 @@ from typing import Callable, Iterable
 from handball.domain import Player
 from handball.league_views import TeamId
 from handball.orchestration import GameEngine
-from handball.repository import TeamRepository, _player_from_dict
+from handball.repository import TeamRepository
 
 ROOKIE_CONTRACT_YEARS = 3
 ROOKIE_CONTRACT_SALARY = 1  # millions
@@ -96,10 +96,10 @@ class DraftService:
                 overall += 1
 
                 position = position or assign_random_position()
-                legacy = create_draft_player(name, position)
-                legacy.update_contract(self.rookie_years, self.rookie_salary, rookie=True)
-                legacy.years_remaining = self.rookie_years
-                player = self._to_domain_player(legacy, holder, used_ids)
+                pid = self._unique_player_id(holder, name, used_ids)
+                player = create_draft_player(name, position, id=pid)
+                player.update_contract(self.rookie_years, self.rookie_salary, rookie=True)
+                player.years_remaining = self.rookie_years
 
                 picks.append(DraftPickResult(
                     round_num=round_num, pick_num=pick_num, overall=overall,
@@ -108,17 +108,14 @@ class DraftService:
         return picks
 
     @staticmethod
-    def _to_domain_player(legacy, holder: TeamId, used_ids: set[str]) -> Player:
-        """Convert a draft_simulator Player into a domain.Player with a stable,
-        collision-safe id (reuses the tested serialization round-trip)."""
-        base = f"{_slug(holder)}-{_slug(legacy.name)}"
+    def _unique_player_id(holder: TeamId, name: str, used_ids: set[str]) -> str:
+        """Stable, collision-safe domain id for a draftee: '<team>-<name>'."""
+        base = f"{_slug(holder)}-{_slug(name)}"
         pid, n = base, 2
         while pid in used_ids:
             pid, n = f"{base}-{n}", n + 1
         used_ids.add(pid)
-        d = legacy.to_dict()
-        d["id"] = pid
-        return _player_from_dict(d)
+        return pid
 
 
 # ---------------------------------------------------------------------------
