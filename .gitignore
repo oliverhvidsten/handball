@@ -9,3 +9,11 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Editor / tooling / generated
+.claude/
+.vscode/
+graphify-out/
+
+# Scratch
+handball/testing.ipynb
