@@ -1,0 +1,98 @@
+/* ============================================================
+   NHA — Colors
+   Light sports-dashboard palette. Pitch-green action color (#3ba776),
+   deepened for AA contrast on white; deep ink-navy chrome.
+   ============================================================ */
+:root {
+  /* --- Brand / pitch green --------------------------------- */
+  --green-50:  #e9f7ef;
+  --green-100: #cdeede;
+  --green-200: #9fdcbf;
+  --green-300: #5ec593;
+  --green-400: #2bac72;
+  --green-500: #18a368;   /* brand accent (decorative, logos) */
+  --green-600: #0b8f52;   /* primary action bg */
+  --green-700: #097a45;   /* hover / pressed / green text on light */
+  --green-800: #066638;   /* deepest green — emphasis text */
+
+  /* --- Ink / navy chrome ----------------------------------- */
+  --ink-950: #0c1219;     /* topbar background */
+  --ink-900: #11161f;
+  --ink-800: #1b2430;
+  --ink-700: #2a3543;
+  --ink-600: #3c4a5c;
+
+  /* --- Neutrals / surfaces --------------------------------- */
+  --bg:        #f3f5f8;
+  --surface:   #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #eef1f6;
+  --line:        #e4e8ef;
+  --line-strong: #cfd6e0;
+
+  /* --- Text ------------------------------------------------ */
+  --text:        #131a24;
+  --text-soft:   #3a4654;
+  --muted:       #5c6877;
+  --text-invert: #ffffff;
+  --text-on-green: #ffffff;
+
+  /* --- Semantic accents ------------------------------------ */
+  --blue-600:  #1f6fe0;
+  --blue-soft: #e7f0fd;
+  --blue-text: #155bbd;
+
+  --amber-600: #c98410;
+  --amber-soft:#fbeccb;
+  --amber-text:#8a5a08;
+
+  --red-600:   #d23f3a;
+  --red-soft:  #fde3e2;
+  --red-text:  #a82d29;
+
+  --purple-600:#7c4dd6;
+  --purple-soft:#ede6fb;
+  --purple-text:#5d36ab;
+
+  --slate-600: #5a6675;
+  --slate-soft:#e7eaf0;
+  --slate-text:#434e5d;
+
+  /* ====== Semantic aliases ======================= */
+  --brand:            var(--green-500);
+  --action:           var(--green-600);
+  --action-hover:     var(--green-700);
+  --focus-ring:       var(--green-400);
+
+  --surface-card:     var(--surface);
+  --surface-app:      var(--bg);
+  --surface-zebra:    var(--surface-2);
+  --surface-hover:    var(--surface-3);
+
+  --text-body:        var(--text);
+  --text-muted:       var(--muted);
+  --text-heading:     var(--text);
+
+  --border-card:      var(--line);
+  --border-input:     var(--line-strong);
+
+  /* Stat-chip semantics */
+  --stat-offense-bg:   var(--green-50);
+  --stat-offense-text: var(--green-700);
+  --stat-defense-bg:   var(--blue-soft);
+  --stat-defense-text: var(--blue-text);
+  --stat-goalie-bg:    var(--purple-soft);
+  --stat-goalie-text:  var(--purple-text);
+
+  /* Trade-status semantics */
+  --status-proposed-bg:   var(--amber-soft);
+  --status-proposed-text: var(--amber-text);
+  --status-accepted-bg:   var(--blue-soft);
+  --status-accepted-text: var(--blue-text);
+  --status-committed-bg:  var(--green-100);
+  --status-committed-text:var(--green-700);
+  --status-rejected-bg:   var(--red-soft);
+  --status-rejected-text: var(--red-text);
+  --status-cancelled-bg:  var(--slate-soft);
+  --status-cancelled-text:var(--slate-text);
+}
