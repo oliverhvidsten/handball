@@ -1,0 +1,26 @@
+# Render blueprint for the NHA write API (FastAPI).
+# Render free web services sleep after ~15 min idle (first request then waits
+# ~30s); only WRITE actions (lineup save, trades) hit this API — all reads go
+# straight to Supabase, so browsing/login are never affected.
+#
+# Deploy: push this file, then in the Render dashboard create a "Blueprint"
+# from the repo. Set HANDBALL_DB_URL as a secret (it's marked sync:false).
+services:
+  - type: web
+    name: nha-api
+    runtime: python
+    region: oregon          # same region as the Supabase project (low latency)
+    plan: free
+    rootDir: .
+    buildCommand: "pip install -e '.[api]'"
+    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: HANDBALL_DB_URL          # Supabase SESSION POOLER, postgresql+psycopg://...
+        sync: false                   # secret — set in the Render dashboard
+      - key: SUPABASE_URL             # for JWKS token verification
+        value: https://dabgpgjwvarojclnpptf.supabase.co
+      - key: NHA_CORS_ORIGINS         # the GitHub Pages origin (allow the browser app)
+        value: https://oliverhvidsten.github.io
