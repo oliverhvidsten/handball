@@ -6,4 +6,17 @@ setup(
     author="Oliver Hvidsten",
     version="0.1",
     packages=find_packages(),
+    install_requires=[
+        "sqlalchemy>=2",
+        "psycopg[binary]>=3",
+        "alembic>=1.13",
+    ],
+    extras_require={
+        # The write API (api/). Core sim + data layer do not need these.
+        "api": [
+            "fastapi>=0.110",
+            "uvicorn[standard]>=0.29",
+            "pyjwt>=2.8",
+        ],
+    },
 )

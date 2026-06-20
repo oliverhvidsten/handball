@@ -70,6 +70,33 @@ def test_records_and_logs_land_on_the_model():
         assert len(team.bench["Goalie"][0].current_season_log["saves"]) == 1
 
 
+def test_player_lines_are_complete_and_id_keyed():
+    """player_lines covers every player on both teams, keyed by stable id, with
+    the full stat shape the relational PostgresRecordSink persists."""
+    np.random.seed(13)
+    home, away = _team("Boston"), _team("New York")
+    result = GameSimulatorAdapter().play(home, away)
+
+    expected_ids = {p.id for p in home.roster()} | {p.id for p in away.roster()}
+    assert set(result.player_lines) == expected_ids
+
+    for line in result.player_lines.values():
+        assert set(line) == {"goals", "shots", "saves", "goals_allowed", "performance"}
+
+    # per-team goals in the lines reconcile with the score (mirrors the season-log
+    # reconciliation, proving lines are sourced from this game's entries)
+    home_line_goals = sum(result.player_lines[p.id]["goals"] for p in home.roster())
+    away_line_goals = sum(result.player_lines[p.id]["goals"] for p in away.roster())
+    assert home_line_goals == result.home_score
+    assert away_line_goals == result.away_score
+
+    # only goalies carry saves; the starting goalie of each team has >= 0 (and the
+    # save lists were populated, unlike field players whose source list is empty)
+    for team in (home, away):
+        gid = team.starters["Goalie"][0].id
+        assert result.player_lines[gid]["saves"] == team.starters["Goalie"][0].current_season_log["saves"][-1]
+
+
 def test_goals_logged_reconcile_with_score():
     np.random.seed(13)
     home, away = _team("Boston"), _team("New York")
@@ -97,6 +124,24 @@ def test_full_orchestrator_with_real_engine_offline(tmp_path):
     assert sum(repo.load("Boston").record) == 1
     # season logs persisted too (survive serialize -> load)
     assert len(repo.load("Boston").starters["Forward"][0].current_season_log["goals"]) == 1
+    assert len(orch.record_sink.games) == 1
+
+
+def test_orchestrator_runs_without_a_gateway(tmp_path):
+    """Batch-sim mode: no SheetGateway (the website owns the manager inbox). The
+    period still plays, records persist, and games are recorded."""
+    np.random.seed(1)
+    repo = InMemoryTeamRepository()
+    repo.save(_team("Boston"))
+    repo.save(_team("New York"))
+
+    orch = SeasonOrchestrator(repo, None, GameSimulatorAdapter(), InMemoryRecordSink())
+    orch.publish_all()                                   # no-op, must not raise
+    assert orch.apply_manager_lineup("Boston") is False  # no inbox to pull
+    results = orch.run_period([("Boston", "New York")])
+
+    assert len(results) == 1
+    assert sum(repo.load("Boston").record) == 1
     assert len(orch.record_sink.games) == 1
 
 

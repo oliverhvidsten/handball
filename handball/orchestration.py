@@ -40,6 +40,10 @@ class GameResult:
     home_score: int
     away_score: int
     went_to_overtime: bool = False
+    # player id -> this game's line. Keys: goals, shots, saves, goals_allowed,
+    # performance. Field players carry 0 saves/goals_allowed; goalies carry the
+    # halftime-split goalie stats. Empty for engines that don't model lineups
+    # (e.g. SimpleGameEngine).
     player_lines: dict[PlayerId, dict] = field(default_factory=dict)
 
     @property
@@ -100,15 +104,28 @@ class GameSimulatorAdapter:
         from handball.game_simulator import GameSimulator
 
         sim = GameSimulator(home, away, allow_tie=self.allow_tie)
-        sim.simulate_game()           # runs the game and calls postgame()
+        sim.simulate_game()           # runs the game, calls postgame(), appends season logs
         s = sim.get_game_summary()
 
-        lines: dict[PlayerId, dict] = {}
-        for side in ("home", "away"):
-            for name, goals in s.get(f"{side}_goals_by_player", {}).items():
-                lines.setdefault(name, {})["goals"] = int(goals)
-            for name, shots in s.get(f"{side}_shots_by_player", {}).items():
-                lines.setdefault(name, {})["shots"] = int(shots)
+        # Build complete per-player lines keyed by stable PlayerId. The simulator
+        # has just appended this game's entry to every player's season log, so the
+        # last element of each list IS this game's line -- a robust, id-keyed
+        # source (no fragile name lookups, and goalie saves/goals-allowed land on
+        # the right player). Non-goalies have empty saves/goals_allowed lists.
+        def lines_for(team: Team) -> dict[PlayerId, dict]:
+            out: dict[PlayerId, dict] = {}
+            for p in team.roster():
+                log = p.current_season_log
+                out[p.id] = {
+                    "goals": int(log["goals"][-1]) if log["goals"] else 0,
+                    "shots": int(log["shots_taken"][-1]) if log["shots_taken"] else 0,
+                    "saves": int(log["saves"][-1]) if log["saves"] else 0,
+                    "goals_allowed": int(log["goals_allowed"][-1]) if log["goals_allowed"] else 0,
+                    "performance": float(log["performances"][-1]) if log["performances"] else 0.0,
+                }
+            return out
+
+        lines = {**lines_for(home), **lines_for(away)}
 
         return GameResult(
             home_id=home.id,
@@ -143,11 +160,14 @@ class SeasonOrchestrator:
     def __init__(
         self,
         team_repo: TeamRepository,
-        gateway: SheetGateway,
+        gateway: SheetGateway | None,
         engine: GameEngine,
         record_sink: RecordSink | None = None,
         rules: RosterRules = DEFAULT_RULES,
     ) -> None:
+        # gateway is None when the manager inbox/outbox lives elsewhere (the
+        # website applies validated arrangements directly via the API). The
+        # batch sim then needs no Sheet: publish/read become no-ops.
         self.team_repo = team_repo
         self.gateway = gateway
         self.engine = engine
@@ -156,7 +176,9 @@ class SeasonOrchestrator:
 
     def publish_all(self) -> None:
         """Establish the sheet baseline for every team (pre-season / after any
-        out-of-band roster change)."""
+        out-of-band roster change). No-op when there is no gateway."""
+        if self.gateway is None:
+            return
         for team in self.team_repo.load_all():
             self.gateway.publish(team.public_view())
 
@@ -164,7 +186,10 @@ class SeasonOrchestrator:
         """Pull a manager's lineup edit from the sheet: diff vs baseline, and if
         changed validate + apply + persist + republish. Returns whether an edit
         was applied. Invalid edits raise ArrangementError and leave the team
-        untouched (atomic)."""
+        untouched (atomic). No-op (returns False) when there is no gateway --
+        edits then arrive live through the API, not an inbox poll."""
+        if self.gateway is None:
+            return False
         team = self.team_repo.load(team_id)
         on_sheet = self.gateway.read_arrangement(team_id)
         if on_sheet == team.arrangement():
@@ -181,7 +206,8 @@ class SeasonOrchestrator:
 
         for team in (home, away):
             self.team_repo.save(team)
-            self.gateway.publish(team.public_view())
+            if self.gateway is not None:
+                self.gateway.publish(team.public_view())
         self.record_sink.record_game(result)
         return result
 

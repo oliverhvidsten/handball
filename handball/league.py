@@ -154,6 +154,36 @@ def build_production_league(  # pragma: no cover - live wiring
     return LeagueOperations(orch, schedule=schedule, injuries=injuries)
 
 
+def build_production_league_pg(
+    *,
+    db_url: str | None = None,
+    year: int = 0,
+    allow_tie: bool = False,
+    seed: int | None = None,
+    schedule: Schedule | None = None,
+) -> LeagueOperations:
+    """Postgres-backed production facade -- the relational replacement for
+    build_production_league. Source of truth + stats live in Postgres
+    (PostgresTeamRepository + PostgresRecordSink), and there is NO SheetGateway:
+    managers edit lineups/trades through the website/API, so the batch sim needs
+    no inbox. `db_url` overrides $HANDBALL_DB_URL; `year` tags the season the
+    record sink writes."""
+    from handball.db import get_engine
+    from handball.orchestration import GameSimulatorAdapter
+    from handball.pg_record_sink import PostgresRecordSink
+    from handball.pg_repository import PostgresTeamRepository
+
+    engine = get_engine(db_url)
+    orch = SeasonOrchestrator(
+        team_repo=PostgresTeamRepository(engine),
+        gateway=None,
+        engine=GameSimulatorAdapter(allow_tie=allow_tie),
+        record_sink=PostgresRecordSink(engine, season=year),
+    )
+    injuries = InjurySimulator(InjuryService(DEFAULT_RULES), rng=random.Random(seed), year=year)
+    return LeagueOperations(orch, schedule=schedule, injuries=injuries)
+
+
 def build_production_league_from_cred(  # pragma: no cover - live wiring
     datafiles_dir,
     cred_path: str = "/Users/oliverhvidsten/Documents/handball/cred.txt",
