@@ -7,6 +7,7 @@ setup(
     version="0.1",
     packages=find_packages(),
     install_requires=[
+        "numpy>=1.26",          # used by handball.players / domain (core import path)
         "sqlalchemy>=2",
         "psycopg[binary]>=3",
         "alembic>=1.13",
