@@ -3,7 +3,6 @@ import { useAuth } from "./auth";
 import { TopNav, TeamSwitcher } from "./ds";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import MyTeams from "./pages/MyTeams";
 import Teams from "./pages/Teams";
 import Roster from "./pages/Roster";
 import PlayerDetail from "./pages/PlayerDetail";
@@ -17,7 +16,7 @@ import { usePendingTradeCount } from "./hooks";
 
 const NAV = [
   { label: "Dashboard", to: "/dashboard" },
-  { label: "My Teams", to: "/my-teams" },
+  { label: "Roster", to: "/roster" },
   { label: "Teams", to: "/teams" },
   { label: "Standings", to: "/standings" },
   { label: "Leaders", to: "/leaderboard" },
@@ -77,7 +76,7 @@ export default function App() {
       <main style={{ maxWidth: "var(--container-max)", margin: "0 auto", padding: "24px 20px" }}>
         <Routes>
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/my-teams" element={<MyTeams />} />
+          <Route path="/roster" element={<Roster />} />
           <Route path="/teams" element={<Teams />} />
           <Route path="/teams/:slug" element={<Roster />} />
           <Route path="/players/:legacyId" element={<PlayerDetail />} />

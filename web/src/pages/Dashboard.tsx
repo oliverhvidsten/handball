@@ -33,7 +33,7 @@ export default function Dashboard() {
         .eq("slot_group", "starters")
         .eq("is_injured", true);
       (starters ?? []).forEach((p: any) =>
-        found.push({ text: `Injured starter: ${p.name} — set your lineup`, to: `/teams/${activeTeam.slug}` })
+        found.push({ text: `Injured starter: ${p.name} — set your lineup`, to: `/roster` })
       );
       // pending trade requests addressed to this team
       const { count } = await supabase

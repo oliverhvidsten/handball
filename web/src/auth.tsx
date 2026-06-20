@@ -26,6 +26,8 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 
+const ACTIVE_TEAM_KEY = "nha.activeTeam";
+
 /** Abbreviation from a team name: initials of words, capped at 3 (matches the kit). */
 function abbrev(name: string): string {
   const words = name.split(/\s+/).filter(Boolean);
@@ -37,7 +39,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [teams, setTeams] = useState<OwnedTeam[]>([]);
-  const [activeSlug, setActiveSlug] = useState<string | null>(null);
+  const [activeSlug, setActiveSlug] = useState<string | null>(
+    () => localStorage.getItem(ACTIVE_TEAM_KEY)
+  );
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -75,7 +79,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ties: row.ties,
       }));
       setTeams(owned);
-      setActiveSlug((cur) => cur ?? owned[0]?.slug ?? null);
+      // Keep the persisted selection if it's still an owned team; otherwise
+      // fall back to the first team (handles a stale slug from another user).
+      // `cur` can be null here on a cold load (the no-session branch runs while
+      // Supabase resolves the session), so fall back to localStorage too.
+      setActiveSlug((cur) => {
+        const want = cur ?? localStorage.getItem(ACTIVE_TEAM_KEY);
+        return owned.some((t) => t.slug === want) ? want : owned[0]?.slug ?? null;
+      });
     })();
   }, [session]);
 
@@ -90,13 +101,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isCommissioner: role === "commissioner",
     teams,
     activeTeam,
-    setActiveTeam: (slug) => setActiveSlug(slug),
+    setActiveTeam: (slug) => {
+      setActiveSlug(slug);
+      localStorage.setItem(ACTIVE_TEAM_KEY, slug);
+    },
     loading,
     signIn: async (email, password) => {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
     },
     signOut: async () => {
+      localStorage.removeItem(ACTIVE_TEAM_KEY);
       await supabase.auth.signOut();
     },
   };
