@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
-import { RosterColumns, PlayerRow, Alert, Button, Toast } from "../ds";
+import { RosterColumns, PlayerRow, Alert, Button, Toast, EmptyState } from "../ds";
 
 const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"] as const;
 type Group = "starters" | "bench" | "reserves";
@@ -44,13 +44,16 @@ function buildArr(players: PP[]): Arrangement {
 }
 
 export default function Roster() {
-  const { slug = "" } = useParams();
-  const { isCommissioner, teams } = useAuth();
+  // The "/teams/:slug" route views any team (read-only unless owned); the
+  // "/roster" nav entry has no param and follows the TeamSwitcher selection.
+  const { slug: paramSlug } = useParams();
+  const { isCommissioner, teams, activeTeam } = useAuth();
+  const slug = paramSlug ?? activeTeam?.slug ?? "";
   const editable = isCommissioner || teams.some((t) => t.slug === slug);
   const nav = useNavigate();
 
   const [players, setPlayers] = useState<PP[]>([]);
-  const [teamName, setTeamName] = useState(slug);
+  const [teamName, setTeamName] = useState("");
   const [arr, setArr] = useState<Arrangement>(emptyArr());
   const [problems, setProblems] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -60,6 +63,7 @@ export default function Roster() {
   const load = useCallback(async () => {
     setProblems([]);
     setErr(null);
+    if (!slug) { setPlayers([]); setArr(emptyArr()); setTeamName(""); return; }
     const { data: team } = await supabase.from("teams").select("id, name").eq("slug", slug).maybeSingle();
     if (!team) { setErr(`No team "${slug}".`); return; }
     setTeamName(team.name);
@@ -139,6 +143,17 @@ export default function Roster() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (!slug) {
+    return (
+      <section>
+        <EmptyState
+          title="No team selected"
+          message="A commissioner assigns teams to managers. Once you own one, pick it from the team switcher to manage its roster."
+        />
+      </section>
+    );
   }
 
   return (
