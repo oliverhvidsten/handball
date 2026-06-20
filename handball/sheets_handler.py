@@ -337,7 +337,11 @@ class SheetHandler:
         # Write the notes to the google sheet
         rows = []
         for free_agent in free_agents_list:
-            rows.append({"values": [{"note": free_agent.get_notes()}]})
+            # PlayerPublicView (the visibility boundary) carries no notes; only
+            # the richer domain Player exposes get_notes(). Degrade gracefully.
+            get_notes = getattr(free_agent, "get_notes", None)
+            note = get_notes() if callable(get_notes) else ""
+            rows.append({"values": [{"note": note}]})
 
         
         # Now, format into a request

@@ -9,6 +9,7 @@ SheetHandler(team_id) construction bug.
 import copy
 
 from handball.domain import Player, Team
+from handball.league_views import PlayerPublicView
 from handball.migrate_v1_to_v2 import SheetArrangementSource
 from handball.sheet_gateway import GoogleSheetGateway
 
@@ -20,11 +21,16 @@ class FakeSheetHandler:
     def __init__(self):
         self.grids: dict[str, list[list]] = {}
 
+        self.free_agents = {}  # position group -> list passed to write_free_agents
+
     def get_full_team_values(self, team_name):
         return copy.deepcopy(self.grids.get(team_name, []))
 
     def update_full_team_values(self, team_name, edited_data):
         self.grids[team_name] = copy.deepcopy(edited_data)
+
+    def write_free_agents(self, free_agents_list, position):
+        self.free_agents[position] = list(free_agents_list)
 
 
 def _team() -> Team:
@@ -106,6 +112,45 @@ def test_arrangement_source_parses_same_layout():
     assert [n for n in arr["reserves"] if n] == ["Ray", "Sam"]
     assert meta["coaches"] == ["Hank", "Olga", "Dex"]
     assert meta["record"] == [10, 4, 1]
+
+
+def _fa(name, pos):
+    return PlayerPublicView(
+        id=f"fa-{name}", name=name, position=pos, age=27, contract="1/$2M",
+        injured=False, offense=4.0, defense=4.0, goalie_skill=0.1,
+    )
+
+
+def test_publish_free_agents_groups_by_position_with_plural_keys():
+    h = FakeSheetHandler()
+    gw = GoogleSheetGateway(h)
+    gw.publish_free_agents([
+        _fa("Ada", "Forward"),
+        _fa("Ben", "Midfielder"),
+        _fa("Cy", "Defense"),
+        _fa("Dee", "Goalie"),
+        _fa("Eli", "Forward"),
+    ])
+
+    # Singular domain positions map to the Free Agents tab's plural column groups.
+    assert [p.name for p in h.free_agents["Forwards"]] == ["Ada", "Eli"]
+    assert [p.name for p in h.free_agents["Midfielders"]] == ["Ben"]
+    assert [p.name for p in h.free_agents["Defenders"]] == ["Cy"]
+    assert [p.name for p in h.free_agents["Goalies"]] == ["Dee"]
+
+
+def test_publish_free_agents_skips_empty_groups():
+    h = FakeSheetHandler()
+    GoogleSheetGateway(h).publish_free_agents([_fa("Ada", "Forward")])
+    # Only the non-empty group is written -- no zero-length ranges sent.
+    assert list(h.free_agents) == ["Forwards"]
+
+
+def test_publish_free_agents_rejects_unknown_position():
+    h = FakeSheetHandler()
+    import pytest
+    with pytest.raises(ValueError):
+        GoogleSheetGateway(h).publish_free_agents([_fa("Ada", "Winger")])
 
 
 if __name__ == "__main__":

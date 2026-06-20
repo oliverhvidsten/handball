@@ -226,5 +226,27 @@ class GoogleSheetGateway:
         # Refresh the name->id index so the next read can resolve names.
         self._name_index[view.id] = {p.name: p.id for p in view.all_players()}
 
+    # PlayerPublicView.position is singular (league_views.POSITIONS); the Free
+    # Agents tab groups columns under plural keys (constants.free_agents_ranges).
+    _FREE_AGENT_GROUPS = {
+        "Forward": "Forwards",
+        "Midfielder": "Midfielders",
+        "Defense": "Defenders",
+        "Goalie": "Goalies",
+    }
+
     def publish_free_agents(self, views: list[PlayerPublicView]) -> None:
-        raise NotImplementedError("wire to SheetHandler.write_free_agents in step 1")
+        grouped: dict[str, list[PlayerPublicView]] = {}
+        for v in views:
+            try:
+                group = self._FREE_AGENT_GROUPS[v.position]
+            except KeyError:
+                raise ValueError(
+                    f"free agent {v.name!r} has unknown position {v.position!r}"
+                )
+            grouped.setdefault(group, []).append(v)
+
+        # Skip empty groups: write_free_agents builds a range from the list
+        # length, which is meaningless (and rejected by the API) for zero rows.
+        for group, players in grouped.items():
+            self.handler.write_free_agents(players, group)

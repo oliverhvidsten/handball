@@ -1,6 +1,7 @@
 # Secrets / credentials
 cred.txt
 gs_key.json
+.env
 
 # Python
 __pycache__/

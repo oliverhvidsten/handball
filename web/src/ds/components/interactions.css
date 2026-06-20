@@ -1,0 +1,33 @@
+/* ============================================================
+   NHA — interaction states
+   ============================================================ */
+
+/* Buttons -------------------------------------------------- */
+.nha-btn { -webkit-tap-highlight-color: transparent; }
+.nha-btn:not(:disabled):active { transform: translateY(1px); }
+.nha-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.nha-btn[data-variant="primary"]:not(:disabled):hover { background: var(--action-hover); border-color: var(--action-hover); }
+.nha-btn[data-variant="secondary"]:not(:disabled):hover { border-color: var(--action); color: var(--action-hover); }
+.nha-btn[data-variant="ghost"]:not(:disabled):hover { background: var(--surface-hover); color: var(--text-body); }
+.nha-btn[data-variant="danger"]:not(:disabled):hover { background: var(--red-soft); border-color: var(--red-600); }
+
+/* Icon button --------------------------------------------- */
+.nha-iconbtn:not(:disabled):hover { background: var(--surface-hover); color: var(--text-body); border-color: var(--border-input); }
+.nha-iconbtn:not(:disabled):active { transform: translateY(1px); }
+.nha-iconbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* Inputs & selects ---------------------------------------- */
+.nha-field:hover { border-color: var(--border-input); }
+.nha-field:focus { outline: none; border-color: var(--action); box-shadow: var(--shadow-focus); }
+.nha-field::placeholder { color: var(--muted); }
+
+/* Checkbox ------------------------------------------------- */
+.nha-check:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* Table rows ----------------------------------------------- */
+.nha-table tbody tr.nha-row:hover { background: var(--surface-hover); }
+
+/* Nav links ------------------------------------------------ */
+.nha-navlink:hover { color: #fff; }
+.nha-navlink:hover::after { transform: scaleX(1); }
