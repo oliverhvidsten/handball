@@ -55,6 +55,7 @@ export default function Roster() {
   const [problems, setProblems] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     setProblems([]);
@@ -127,6 +128,7 @@ export default function Roster() {
   async function save() {
     setProblems([]);
     setErr(null);
+    setSaving(true); // shows feedback through a slow first request (cold-start host)
     try {
       await apiFetch(`/teams/${slug}/arrangement`, { method: "PUT", body: JSON.stringify(arr) });
       setToast("Lineup saved.");
@@ -134,6 +136,8 @@ export default function Roster() {
     } catch (e) {
       if (e instanceof ApiError && e.problems) setProblems(e.problems);
       else setErr(e instanceof Error ? e.message : "save failed");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -166,8 +170,10 @@ export default function Roster() {
 
       {editable && (
         <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
-          <Button variant="primary" onClick={save}>Save lineup</Button>
-          <Button onClick={() => setArr(buildArr(players))}>Reset</Button>
+          <Button variant="primary" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save lineup"}
+          </Button>
+          <Button onClick={() => setArr(buildArr(players))} disabled={saving}>Reset</Button>
         </div>
       )}
 
