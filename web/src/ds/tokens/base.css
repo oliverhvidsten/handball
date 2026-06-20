@@ -27,6 +27,15 @@ h1, h2, h3, h4 {
 a { color: var(--action-hover); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* Full-viewport centering utility (login screen, loading state) */
+.center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
 table, .nums, [data-nums] { font-feature-settings: var(--nums-tabular); }
 
 ::selection { background: var(--green-200); color: var(--green-800); }

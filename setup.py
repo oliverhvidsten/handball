@@ -17,7 +17,9 @@ setup(
         "api": [
             "fastapi>=0.110",
             "uvicorn[standard]>=0.29",
-            "pyjwt>=2.8",
+            # [crypto] pulls in `cryptography`, required to verify Supabase's
+            # ES256 (asymmetric) JWTs. Without it every authed request 401s.
+            "pyjwt[crypto]>=2.8",
         ],
     },
 )
