@@ -19,6 +19,32 @@ export function TopNav({
   mobile = false,
   style = {},
 }) {
+  const teamLinks = links.filter((l) => l.scope === "team");
+  const leagueLinks = links.filter((l) => l.scope !== "team");
+
+  const renderLink = (l) => (
+    <a
+      key={l.label}
+      href={l.href || "#"}
+      onClick={l.onClick}
+      className="nha-navlink"
+      style={{
+        position: "relative",
+        padding: "7px 12px",
+        fontFamily: "var(--font-body)",
+        fontSize: "var(--text-sm)",
+        fontWeight: l.active ? "var(--weight-bold)" : "var(--weight-medium)",
+        color: l.active ? "#fff" : "rgba(255,255,255,0.62)",
+        borderRadius: "var(--radius-sm)",
+        background: l.active ? "rgba(255,255,255,0.08)" : "transparent",
+        textDecoration: "none",
+        transition: "color var(--dur-fast) var(--ease-out)",
+      }}
+    >
+      {l.label}
+    </a>
+  );
+
   return (
     <header
       style={{
@@ -60,37 +86,31 @@ export function TopNav({
         </span>
       </span>
 
-      {teamSwitcher && !mobile && (
-        <>
-          <span style={{ width: 1, height: 26, background: "rgba(255,255,255,0.14)", flex: "none" }} />
+      {!mobile && (teamSwitcher || teamLinks.length > 0) && (
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: teamSwitcher ? 6 : 4,
+            padding: "4px 6px",
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            borderRadius: "var(--radius-md)",
+            flex: "none",
+          }}
+        >
           {teamSwitcher}
-        </>
+          {teamLinks.map(renderLink)}
+        </div>
       )}
 
-      {!mobile && (
+      {!mobile && (teamSwitcher || teamLinks.length > 0) && leagueLinks.length > 0 && (
+        <span style={{ width: 1, height: 26, background: "rgba(255,255,255,0.14)", flex: "none" }} />
+      )}
+
+      {!mobile && leagueLinks.length > 0 && (
         <nav style={{ display: "flex", gap: 4 }}>
-          {links.map((l) => (
-            <a
-              key={l.label}
-              href={l.href || "#"}
-              onClick={l.onClick}
-              className="nha-navlink"
-              style={{
-                position: "relative",
-                padding: "7px 12px",
-                fontFamily: "var(--font-body)",
-                fontSize: "var(--text-sm)",
-                fontWeight: l.active ? "var(--weight-bold)" : "var(--weight-medium)",
-                color: l.active ? "#fff" : "rgba(255,255,255,0.62)",
-                borderRadius: "var(--radius-sm)",
-                background: l.active ? "rgba(255,255,255,0.08)" : "transparent",
-                textDecoration: "none",
-                transition: "color var(--dur-fast) var(--ease-out)",
-              }}
-            >
-              {l.label}
-            </a>
-          ))}
+          {leagueLinks.map(renderLink)}
         </nav>
       )}
 

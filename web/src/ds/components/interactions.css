@@ -17,6 +17,10 @@
 .nha-iconbtn:not(:disabled):active { transform: translateY(1px); }
 .nha-iconbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
 
+/* Menu items ---------------------------------------------- */
+.nha-menuitem:not(:disabled):hover { background: var(--surface-hover); }
+.nha-menuitem:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
 /* Inputs & selects ---------------------------------------- */
 .nha-field:hover { border-color: var(--border-input); }
 .nha-field:focus { outline: none; border-color: var(--action); box-shadow: var(--shadow-focus); }
