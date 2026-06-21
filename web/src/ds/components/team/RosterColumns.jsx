@@ -22,7 +22,7 @@ export function RosterColumns({
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: `repeat(${positions.length}, 1fr)`,
+        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
         gap: 12,
         ...style,
       }}
@@ -57,12 +57,15 @@ export function RosterColumns({
                   Empty
                 </div>
               ) : (
-                list.map((pl) => (
+                list.map((pl, idx) => (
                   <PlayerRow
                     key={pl.id ?? pl.name}
                     player={pl}
                     editable={editable}
                     slot={slot}
+                    showPosition={false}
+                    canMoveUp={idx > 0}
+                    canMoveDown={idx < list.length - 1}
                     onMoveUp={onMove ? () => onMove(pl, -1) : undefined}
                     onMoveDown={onMove ? () => onMove(pl, 1) : undefined}
                     onSlot={onSlot ? (g) => onSlot(pl, g) : undefined}

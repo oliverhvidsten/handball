@@ -2,35 +2,48 @@ import React from "react";
 import { Tag } from "../forms/Tag.jsx";
 import { StatChip } from "../data/StatChip.jsx";
 import { IconButton } from "../forms/IconButton.jsx";
+import { Menu } from "../forms/Menu.jsx";
 
-const POS_TONE = { Forward: "green", Midfielder: "blue", Defense: "amber", Goalie: "purple" };
+const POS_TONE = { Forward: "neutral", Midfielder: "neutral", Defense: "neutral", Goalie: "neutral" };
+const GROUP_LABEL = { starters: "Starters", bench: "Bench", reserves: "Reserves" };
 
 /**
  * NHA PlayerRow — one roster player: name, position tag, O/D/G stat chips,
- * an optional INJ flag, and (when editable) up/down + S/B/R move controls.
+ * an optional INJ flag, and (when editable) a ⋯ menu with move actions.
  */
 export function PlayerRow({
   player,
   editable = false,
   slot = null,
+  canMoveUp = false,
+  canMoveDown = false,
   onMoveUp,
   onMoveDown,
   onSlot,
   onClick,
   showGoalie = null,
+  showPosition = true,
   style = {},
 }) {
   const p = player || {};
   const isGoalie = p.position === "Goalie";
   const goalieVisible = showGoalie != null ? showGoalie : isGoalie;
-  const slotKey = { starters: "S", bench: "B", reserves: "R" };
+
+  const menuItems = [
+    { label: "Move up", onClick: onMoveUp, disabled: !canMoveUp },
+    { label: "Move down", onClick: onMoveDown, disabled: !canMoveDown },
+    { divider: true },
+    ...["starters", "bench", "reserves"]
+      .filter((g) => g !== slot)
+      .map((g) => ({ label: `Move to ${GROUP_LABEL[g]}`, onClick: onSlot ? () => onSlot(g) : undefined })),
+  ];
 
   return (
     <div
       style={{
         display: "flex",
-        alignItems: "center",
-        gap: 10,
+        flexDirection: "column",
+        gap: 6,
         padding: "8px 10px",
         background: "var(--surface-card)",
         border: `1px solid ${p.injured ? "var(--red-soft)" : "var(--line)"}`,
@@ -39,19 +52,19 @@ export function PlayerRow({
         ...style,
       }}
     >
-      {p.number != null && (
-        <span style={{
-          flex: "none", width: 26, textAlign: "center", fontFamily: "var(--font-mono)",
-          fontWeight: "var(--weight-bold)", fontSize: "var(--text-sm)", color: "var(--muted)",
-        }}>
-          {p.number}
-        </span>
-      )}
-
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {p.number != null && (
+          <span style={{
+            flex: "none", width: 26, textAlign: "center", fontFamily: "var(--font-mono)",
+            fontWeight: "var(--weight-bold)", fontSize: "var(--text-sm)", color: "var(--muted)",
+          }}>
+            {p.number}
+          </span>
+        )}
         <span
           onClick={onClick}
           style={{
+            flex: 1, minWidth: 0,
             fontWeight: "var(--weight-semibold)", fontSize: "var(--text-sm)", color: "var(--text-body)",
             cursor: onClick ? "pointer" : "default", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
           }}
@@ -59,35 +72,23 @@ export function PlayerRow({
           {p.name}
           {p.injured && <Tag tone="red" solid size="sm" style={{ marginLeft: 6, verticalAlign: "middle" }}>INJ</Tag>}
         </span>
-        <span>
-          <Tag tone={POS_TONE[p.position] || "neutral"} size="sm">{p.position}</Tag>
-        </span>
+        {editable && (
+          <Menu
+            style={{ flex: "none" }}
+            items={menuItems}
+            trigger={<IconButton size="sm" title="Move player">⋯</IconButton>}
+          />
+        )}
       </div>
 
-      <div style={{ display: "flex", gap: 5, flex: "none" }}>
-        <StatChip kind="offense" value={fmt(p.offense)} />
-        <StatChip kind="defense" value={fmt(p.defense)} />
+      <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+        {showPosition && (
+          <Tag tone={POS_TONE[p.position] || "neutral"} size="sm" style={{ marginRight: 1 }}>{p.position}</Tag>
+        )}
+        {!isGoalie && <StatChip kind="offense" value={fmt(p.offense)} />}
+        {!isGoalie && <StatChip kind="defense" value={fmt(p.defense)} />}
         {goalieVisible && <StatChip kind="goalie" value={fmt(p.goalie)} />}
       </div>
-
-      {editable && (
-        <div style={{ display: "flex", gap: 3, flex: "none", marginLeft: 2 }}>
-          <IconButton size="sm" title="Move up" onClick={onMoveUp}>▲</IconButton>
-          <IconButton size="sm" title="Move down" onClick={onMoveDown}>▼</IconButton>
-          <span style={{ width: 6 }} />
-          {["starters", "bench", "reserves"].map((g) => (
-            <IconButton
-              key={g}
-              size="sm"
-              active={slot === g}
-              title={g[0].toUpperCase() + g.slice(1)}
-              onClick={onSlot ? () => onSlot(g) : undefined}
-            >
-              {slotKey[g]}
-            </IconButton>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

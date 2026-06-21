@@ -6,6 +6,7 @@ export { Tabs } from "./components/forms/Tabs.jsx";
 export { Tag } from "./components/forms/Tag.jsx";
 export { Checkbox } from "./components/forms/Checkbox.jsx";
 export { IconButton } from "./components/forms/IconButton.jsx";
+export { Menu } from "./components/forms/Menu.jsx";
 
 export { TopNav } from "./components/navigation/TopNav.jsx";
 export { TeamSwitcher } from "./components/navigation/TeamSwitcher.jsx";

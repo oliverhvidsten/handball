@@ -14,6 +14,7 @@ export const Tabs: C;
 export const Tag: C;
 export const Checkbox: C;
 export const IconButton: C;
+export const Menu: C;
 
 export const TopNav: C;
 export const TeamSwitcher: C;

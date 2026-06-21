@@ -9,6 +9,7 @@ const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"] as const;
 type Group = "starters" | "bench" | "reserves";
 const STARTER_CAPS: Record<string, number> = { Forward: 3, Midfielder: 3, Defense: 3, Goalie: 1 };
 const BENCH_CAPS: Record<string, number> = { Forward: 2, Midfielder: 2, Defense: 2, Goalie: 1 };
+const RESERVE_MAX = 4;
 
 interface PP {
   id: string;
@@ -83,6 +84,26 @@ export default function Roster() {
   };
   const cols = (group: "starters" | "bench") =>
     Object.fromEntries(POSITIONS.map((pos) => [pos, arr[group][pos].map(dsPlayer).filter(Boolean)]));
+
+  // Client mirror of the server's domain.validate rules: surface lineup problems
+  // live so the user gets immediate feedback instead of a rejected save.
+  const issues = useMemo(() => {
+    const out: string[] = [];
+    for (const pos of POSITIONS) {
+      const s = arr.starters[pos].length, sc = STARTER_CAPS[pos];
+      if (s !== sc) out.push(`Starters ${pos}: ${s}/${sc} — ${s < sc ? `need ${sc - s} more` : `${s - sc} too many`}`);
+      const b = arr.bench[pos].length, bc = BENCH_CAPS[pos];
+      if (b !== bc) out.push(`Bench ${pos}: ${b}/${bc} — ${b < bc ? `need ${bc - b} more` : `${b - bc} too many`}`);
+    }
+    if (arr.reserves.length > RESERVE_MAX)
+      out.push(`Reserves: ${arr.reserves.length}/${RESERVE_MAX} — ${arr.reserves.length - RESERVE_MAX} too many`);
+    for (const pos of POSITIONS)
+      for (const id of arr.starters[pos]) {
+        const p = byId.get(id);
+        if (p?.is_injured) out.push(`${p.name} is injured and cannot start`);
+      }
+    return out;
+  }, [arr, byId]);
 
   function update(mut: (d: Arrangement) => void) {
     setArr((cur) => {
@@ -166,18 +187,21 @@ export default function Roster() {
 
       <h3 style={{ margin: "16px 0 8px" }}>Starters</h3>
       <RosterColumns byPosition={cols("starters")} caps={STARTER_CAPS} editable={editable} slot="starters"
-        onMove={onMove} onSlot={onSlot} onPlayerClick={(p: { id: string }) => nav(`/players/${p.id}`)} />
+        onMove={onMove} onSlot={onSlot}
+        onPlayerClick={(p: { id: string }) => nav(`/players/${p.id}`)} />
 
       <h3 style={{ margin: "20px 0 8px" }}>Bench</h3>
       <RosterColumns byPosition={cols("bench")} caps={BENCH_CAPS} editable={editable} slot="bench"
-        onMove={onMove} onSlot={onSlot} onPlayerClick={(p: { id: string }) => nav(`/players/${p.id}`)} />
+        onMove={onMove} onSlot={onSlot}
+        onPlayerClick={(p: { id: string }) => nav(`/players/${p.id}`)} />
 
       <h3 style={{ margin: "20px 0 8px" }}>Reserves</h3>
       <div style={{ display: "flex", flexDirection: "column", gap: 5, maxWidth: 520 }}>
         {arr.reserves.length === 0 && <span style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>None.</span>}
-        {arr.reserves.map((id) => {
+        {arr.reserves.map((id, idx) => {
           const p = dsPlayer(id);
           return p && <PlayerRow key={id} player={p} editable={editable} slot="reserves"
+            canMoveUp={idx > 0} canMoveDown={idx < arr.reserves.length - 1}
             onMoveUp={() => onMove(p, -1)} onMoveDown={() => onMove(p, 1)} onSlot={(g: Group) => onSlot(p, g)}
             onClick={() => nav(`/players/${id}`)} />;
         })}
@@ -185,7 +209,8 @@ export default function Roster() {
 
       {editable && (
         <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
-          <Button variant="primary" onClick={save} disabled={saving}>
+          <Button variant="primary" onClick={save} disabled={saving || issues.length > 0}
+            title={issues.length > 0 ? "Fill each position to its limit (and bench no injured starters) before saving" : undefined}>
             {saving ? "Saving…" : "Save lineup"}
           </Button>
           <Button onClick={() => setArr(buildArr(players))} disabled={saving}>Reset</Button>

@@ -14,15 +14,18 @@ import Draft from "./pages/Draft";
 import Commissioner from "./pages/Commissioner";
 import { usePendingTradeCount } from "./hooks";
 
+// `scope` partitions the nav: "team" pages re-render on the TeamSwitcher's
+// activeTeam selection (grouped with the switcher in the TopNav); "league"
+// pages are league-wide and ignore it.
 const NAV = [
-  { label: "Dashboard", to: "/dashboard" },
-  { label: "Roster", to: "/roster" },
-  { label: "Teams", to: "/teams" },
-  { label: "Standings", to: "/standings" },
-  { label: "Leaders", to: "/leaderboard" },
-  { label: "Schedule", to: "/schedule" },
-  { label: "Draft", to: "/draft" },
-  { label: "Trades", to: "/trades" },
+  { label: "Dashboard", to: "/dashboard", scope: "team" },
+  { label: "Roster", to: "/roster", scope: "team" },
+  { label: "Trades", to: "/trades", scope: "team" },
+  { label: "Teams", to: "/teams", scope: "league" },
+  { label: "Standings", to: "/standings", scope: "league" },
+  { label: "Leaders", to: "/leaderboard", scope: "league" },
+  { label: "Schedule", to: "/schedule", scope: "league" },
+  { label: "Draft", to: "/draft", scope: "league" },
 ];
 
 export default function App() {
@@ -37,6 +40,7 @@ export default function App() {
   const links = NAV.map((n) => ({
     label: n.label,
     href: "#" + n.to,
+    scope: n.scope,
     active: loc.pathname.startsWith(n.to),
     onClick: (e: React.MouseEvent) => { e.preventDefault(); nav(n.to); },
   }));
@@ -44,6 +48,7 @@ export default function App() {
     links.push({
       label: "★ Commissioner",
       href: "#/commissioner",
+      scope: "league",
       active: loc.pathname.startsWith("/commissioner"),
       onClick: (e: React.MouseEvent) => { e.preventDefault(); nav("/commissioner"); },
     });
