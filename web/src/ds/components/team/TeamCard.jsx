@@ -42,12 +42,6 @@ export function TeamCard({ team, yours = false, onClick, style = {} }) {
           <span style={{ fontFamily: "var(--font-display)", fontWeight: "var(--weight-bold)", fontSize: "var(--text-md)", color: "var(--text-heading)" }}>
             {t.name}
           </span>
-          {yours && (
-            <span style={{ fontSize: "var(--text-2xs)", fontWeight: "var(--weight-bold)", letterSpacing: "var(--tracking-wide)",
-              textTransform: "uppercase", color: "var(--green-700)", background: "var(--green-100)", padding: "1px 6px", borderRadius: "var(--radius-xs)" }}>
-              Your team
-            </span>
-          )}
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 3, fontSize: "var(--text-sm)", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
           <span style={{ fontWeight: "var(--weight-semibold)", color: "var(--text-soft)" }}>{record}</span>
