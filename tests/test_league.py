@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 
 from handball.domain import Player, Team
-from handball.injury_service import InjuryService
 from handball.injury_simulator import InjurySimulator
 from handball.league import LeagueOperations
 from handball.orchestration import InMemoryRecordSink, SeasonOrchestrator, SimpleGameEngine
@@ -86,19 +85,19 @@ def test_no_schedule_raises():
         league.run_period(1)
 
 
-def test_run_period_with_injuries_keeps_lineups_legal():
+def test_run_period_with_injuries_applies_at_chunk_end():
     np.random.seed(0)
-    league = _league(risk=1.0, with_injuries=True)   # everyone hurt every game
+    league = _league(risk=1.0, with_injuries=True)   # everyone active gets hurt
     league.publish_all()
     league.run_period(1)
-    # injuries were processed and every persisted lineup is still legal
+    # injuries are rolled once at the end of the chunk. There is no auto-sub, so
+    # injured players stay in the starting lineup -- which is now a legal state.
     assert league.injuries.events
     repo = league.orch.team_repo
     for tid in TEAMS:
         t = repo.load(tid)                            # load() validates
-        for ids in t.arrangement().starters.values():
-            for pid in ids:
-                assert not t.get(pid).is_injured
+        starters = [pid for ids in t.arrangement().starters.values() for pid in ids]
+        assert any(t.get(pid).is_injured for pid in starters)
 
 
 def test_full_lifecycle_draft_and_playoffs():

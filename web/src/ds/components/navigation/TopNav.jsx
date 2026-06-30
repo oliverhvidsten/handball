@@ -16,6 +16,7 @@ export function TopNav({
   onSignOut,
   onBrandClick,
   onBell,
+  onAccount,
   mobile = false,
   style = {},
 }) {
@@ -134,11 +135,19 @@ export function TopNav({
       </NotificationBadge>
 
       {!mobile && email && (
-        <span style={{
-          display: "inline-flex", alignItems: "center", gap: 5,
-          fontSize: "var(--text-sm)", color: "rgba(255,255,255,0.62)", maxWidth: 220,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
+        <span
+          onClick={onAccount}
+          title={onAccount ? "Account settings" : undefined}
+          className={onAccount ? "nha-navlink" : undefined}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            padding: onAccount ? "5px 9px" : 0,
+            borderRadius: "var(--radius-sm)",
+            fontSize: "var(--text-sm)", color: "rgba(255,255,255,0.62)", maxWidth: 220,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            cursor: onAccount ? "pointer" : "default",
+          }}
+        >
           {commissioner && <span title="Commissioner" style={{ color: "var(--amber-600)" }}>★</span>}
           {email}
         </span>

@@ -75,7 +75,6 @@ def test_save_percentage():
 
 def test_injury_report_survives_persistence():
     team = _team()
-    # Injure a RESERVE (injured players can't be starters; this stays valid).
     team.get("r1").injure(2026, MAJOR_INJURIES[0])
     remaining = team.get("r1").injury_log.games_remaining
 

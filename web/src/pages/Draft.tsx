@@ -7,6 +7,7 @@ interface PickRow {
   id: string;
   season: number;
   round: number;
+  pick_number: number | null;
   used: boolean;
   holder: { name: string } | null;
   original: { name: string } | null;
@@ -19,9 +20,9 @@ export default function Draft() {
   useEffect(() => {
     supabase
       .from("draft_picks")
-      .select("id, season, round, used, holder:holder_team_id(name), original:original_team_id(name)")
+      .select("id, season, round, pick_number, used, holder:holder_team_id(name), original:original_team_id(name)")
       .order("season", { ascending: true })
-      .order("round", { ascending: true })
+      .order("pick_number", { ascending: true, nullsFirst: false })
       .then(({ data, error }) => {
         if (error) setErr(error.message);
         else setPicks((data as any as PickRow[]) ?? []);
@@ -47,7 +48,7 @@ export default function Draft() {
               <DraftOrderRow
                 key={p.id}
                 pick={{
-                  overall: i + 1,
+                  overall: p.pick_number ?? i + 1,
                   round: p.round,
                   inRound: i + 1,
                   team: holder,

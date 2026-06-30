@@ -84,27 +84,35 @@ def test_wrong_count_rejected():
     assert any("Forward" in m and "expected 3" in m for m in e.value.problems)
 
 
-def test_position_mismatch_rejected():
+def test_cross_position_assignment_allowed():
+    """Any player may fill any slot regardless of card position (stats are
+    intrinsic to the player and unaffected by the slot)."""
     team = _team()
     base = team.arrangement()
-    bad = TeamArrangement(
-        starters={**base.starters, "Forward": ("f1", "f2", "d1")},  # a defender at forward
-        bench={**base.bench, "Defense": ("d2", "f3")},
+    # Swap a starting forward (f3) and a starting defender (d1) into each other's
+    # position slot. Counts per position are preserved; only the rule that a
+    # player must match their slot's position is being exercised.
+    arr = TeamArrangement(
+        starters={**base.starters, "Forward": ("f1", "f2", "d1"), "Defense": ("f3", "d2", "d3")},
+        bench=base.bench,
         reserves=base.reserves,
     )
-    with pytest.raises(ArrangementError) as e:
-        team.apply_arrangement(bad)
-    assert any("Defense" in m and "Forward slot" in m for m in e.value.problems)
+    team.apply_arrangement(arr)                  # no longer rejected
+    assert team.arrangement().starters["Forward"] == ("f1", "f2", "d1")
+    assert "f3" in team.arrangement().starters["Defense"]
+    assert team.get("d1").position == "Defense"  # the player's card position is unchanged
 
 
-def test_injured_starter_rejected():
+def test_injured_starter_allowed():
+    """The 'no injured starter' rule was dropped -- an injured player may sit in
+    the starting lineup (they contribute nothing in the sim; the web editor warns
+    before saving)."""
     team = _team()
     team.get("f4").is_injured = True            # bench forward gets hurt
     base = team.arrangement()
-    bad = _swap_forward(base, "f3", "f4")         # but manager starts him anyway
-    with pytest.raises(ArrangementError) as e:
-        team.apply_arrangement(bad)
-    assert any("injured" in m.lower() for m in e.value.problems)
+    arr = _swap_forward(base, "f3", "f4")         # manager starts him anyway
+    team.apply_arrangement(arr)                   # accepted
+    assert "f4" in team.arrangement().starters["Forward"]
 
 
 def test_phantom_and_missing_player_rejected():

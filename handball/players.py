@@ -22,10 +22,9 @@ Non-Exhaustive List of Player attributes
 
 """
 from dataclasses import dataclass
-import numpy as np
 
 from handball.simulation_vars import (
-    MINOR_INJURIES, MODERATE_INJURIES, MAJOR_INJURIES,
+    INJURY_CHUNK_DURATION, injury_severity,
 )
 
 
@@ -33,12 +32,16 @@ from handball.simulation_vars import (
 class InjuryReport():
 
     active_injury: bool
-    injuries: list  # records: [year, injury_type, duration, games_remaining, current]
+    # records: [year, injury_type, duration, games_remaining, current]
+    # NOTE: `duration`/`games_remaining` are counted in CHUNKS (1/5-season
+    # periods), not games -- the field keeps its legacy name only because it is a
+    # persisted Postgres column. tick() is called once per chunk.
+    injuries: list
 
     def __repr__(self):
         str_dump = [f"This player has sustained {len(self.injuries)} injuries."]
         for year, itype, duration, remaining, current in self.injuries:
-            status = f"{remaining} games remaining" if current else "recovered"
+            status = f"{remaining} chunks remaining" if current else "recovered"
             str_dump.append(f"{year}: {itype} (duration {duration}, {status})")
         return "\n".join(str_dump)
 
@@ -47,44 +50,38 @@ class InjuryReport():
 
     def add(self, year, injury_type):
         """
-        Add an injury to the player's report. Duration is sampled in *games*
-        from a severity-based distribution; the injury then ticks down one game
-        at a time via tick(). Returns the duration, or False if already injured.
+        Add an injury to the player's report. Duration is measured in *chunks*
+        (1/5-season periods): minor=1, moderate=2, major=3 (INJURY_CHUNK_DURATION).
+        The injury then ticks down one chunk at a time via tick(). Returns the
+        duration, or False if already injured.
         """
         if self.active_injury:
             return False  # can't be re-injured while already out
 
         self.active_injury = True
-        if injury_type in MINOR_INJURIES:
-            duration = int(np.round(np.random.normal(2, 1)))
-        elif injury_type in MODERATE_INJURIES:
-            duration = int(np.round(np.random.normal(5, 2)))
-        elif injury_type in MAJOR_INJURIES:
-            duration = int(np.round(np.random.normal(10, 3)))
-        else:
-            duration = 1
-        duration = max(1, duration)  # every injury sidelines at least one game
+        duration = INJURY_CHUNK_DURATION[injury_severity(injury_type)]
 
-        # [year, type, duration, games_remaining, current]
+        # [year, type, duration, games_remaining (chunks), current]
         self.injuries.append([year, injury_type, duration, duration, True])
         return duration
 
     def tick(self):
         """
-        Advance one game: decrement the active injury's games-remaining and
+        Advance one chunk: decrement the active injury's chunks-remaining and
         mark it recovered once it reaches zero. Season-agnostic (no dependence
-        on an absolute game counter), so injuries carry across periods/seasons.
+        on an absolute counter), so injuries carry across periods/seasons.
         """
         if self.active_injury:
             last = self.injuries[-1]
-            last[3] = max(0, last[3] - 1)  # games_remaining
+            last[3] = max(0, last[3] - 1)  # chunks remaining
             if last[3] <= 0:
                 last[4] = False
                 self.active_injury = False
 
     @property
     def games_remaining(self):
-        """Games left on the current injury (0 if healthy)."""
+        """Chunks left on the current injury (0 if healthy). Named `games_remaining`
+        for DB-column compatibility; the unit is chunks."""
         if self.active_injury and self.injuries:
             return self.injuries[-1][3]
         return 0

@@ -19,6 +19,9 @@ import random
 from dataclasses import dataclass, field
 
 from handball.league_views import (
+    COACH_ROLES,
+    CoachId,
+    CoachTenure,
     DEFAULT_RULES,
     PlayerId,
     PlayerPublicView,
@@ -280,6 +283,64 @@ class Player:
             self.restricted_free_agent = False
 
 
+@dataclass
+class Coach:
+    """A coach as a first-class, league-level entity (careers span teams, so a
+    Coach is NOT a child of Team). `tenures` is the full career history as a list
+    of CoachTenure stints; at most one is open (end_season is None) at a time --
+    the coach's current post. Coaches do not affect gameplay; they are tracked.
+
+    `id` is a stable legacy_id slug (e.g. "jane-doe"), mirroring Player.id.
+    `pool_role` is the role list the coach was drafted from (the only role marker
+    for an unassigned free agent, who has no open tenure). `age` may be None when
+    unknown.
+    """
+    id: CoachId
+    name: str
+    age: int | None = None
+    pool_role: str | None = None
+    tenures: list[CoachTenure] = field(default_factory=list)
+
+    def current_tenure(self) -> CoachTenure | None:
+        """The open stint (end_season is None), or None if the coach holds no
+        current post. Invariant: at most one open tenure (enforced in the DB by a
+        partial unique index)."""
+        for t in self.tenures:
+            if t.end_season is None:
+                return t
+        return None
+
+    def assign(self, team_id: TeamId, role: str, season: int) -> None:
+        """Move the coach into (team_id, role) effective `season`.
+
+        - If the open tenure already IS (team_id, role), this is a no-op -- which
+          is what makes re-seeding the same post idempotent (the short-circuit
+          MUST come first).
+        - Otherwise any open tenure is closed at max(start_season, season - 1) and
+          a new open tenure is appended. The max() guards against end < start on a
+          same-season replacement (satisfying the DB CHECK end_season >= start)."""
+        if role not in COACH_ROLES:
+            raise ValueError(f"unknown coach role {role!r}; expected one of {COACH_ROLES}")
+        cur = self.current_tenure()
+        if cur is not None and cur.team_id == team_id and cur.role == role:
+            return
+        if cur is not None:
+            end = max(cur.start_season, season - 1)
+            self.tenures = [t for t in self.tenures if t is not cur]
+            self.tenures.append(CoachTenure(cur.team_id, cur.role, cur.start_season, end))
+        self.tenures.append(CoachTenure(team_id, role, season, None))
+
+    def leave(self, season: int) -> None:
+        """Close the coach's open tenure (if any) without opening a new one, e.g.
+        the coach has left the league. End season is max(start, season - 1)."""
+        cur = self.current_tenure()
+        if cur is None:
+            return
+        end = max(cur.start_season, season - 1)
+        self.tenures = [t for t in self.tenures if t is not cur]
+        self.tenures.append(CoachTenure(cur.team_id, cur.role, cur.start_season, end))
+
+
 class ArrangementError(ValueError):
     """Raised by validate() with the full list of problems (not just the first),
     so a manager sees everything wrong with their lineup at once."""
@@ -468,23 +529,11 @@ def validate(arr: TeamArrangement, team: Team, rules: RosterRules = DEFAULT_RULE
     if len(arr.reserves) > rules.reserve_max:
         problems.append(f"reserves: {len(arr.reserves)}, max {rules.reserve_max}")
 
-    # 3. Position integrity: a player can only sit in a slot for their position.
-    def check_positions(label: str, group: dict[str, tuple[PlayerId, ...]]) -> None:
-        for pos, ids in group.items():
-            for pid in ids:
-                p = by_id.get(pid)
-                if p is not None and p.position != pos:
-                    problems.append(f"{label}: {p.name} is a {p.position}, placed in {pos} slot")
-
-    check_positions("starter", arr.starters)
-    check_positions("bench", arr.bench)
-
-    # 4. No injured player in a starting slot.
-    for pos, ids in arr.starters.items():
-        for pid in ids:
-            p = by_id.get(pid)
-            if p is not None and p.is_injured:
-                problems.append(f"injured player {p.name} cannot start ({pos})")
+    # Position integrity is intentionally NOT enforced: any player may fill any
+    # slot regardless of their card position (stats are intrinsic to the Player
+    # and unaffected by where they are slotted). Injured players are likewise
+    # allowed in any slot -- an injured player simply contributes nothing in the
+    # game simulator, and the web lineup editor warns before starting one.
 
     if problems:
         raise ArrangementError(problems)

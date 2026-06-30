@@ -22,8 +22,24 @@ from dataclasses import dataclass, field
 # what removes the name-matching fragility in the current sheet sync.
 PlayerId = str
 TeamId = str
+CoachId = str
 
 POSITIONS = ("Forward", "Midfielder", "Defense", "Goalie")
+
+# A team's three coaching posts. Order is the canonical HC/OC/DC ordering used by
+# Team.coaches (the denormalized [HC, OC, DC] name list) and the sheet layout.
+COACH_ROLES = ("HC", "OC", "DC")
+
+
+@dataclass(frozen=True)
+class CoachTenure:
+    """One continuous stint a coach held: a team + role over a season range.
+    end_season is None while the stint is current (the coach still holds the
+    post). This is the unit of a coach's career history."""
+    team_id: TeamId          # == teams.slug
+    role: str                # one of COACH_ROLES
+    start_season: int
+    end_season: int | None = None   # None == current
 
 
 @dataclass(frozen=True)

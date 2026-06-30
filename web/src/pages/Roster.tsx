@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
 import { RosterColumns, PlayerRow, Alert, Button, Toast, EmptyState } from "../ds";
+import { ROLE_LABEL, ROLE_ORDER } from "../lib/coaches";
 
 const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"] as const;
 type Group = "starters" | "bench" | "reserves";
@@ -29,6 +30,7 @@ interface Arrangement {
   bench: Record<string, string[]>;
   reserves: string[];
 }
+interface CoachRow { role: string; coach_legacy_id: string; coach_name: string; }
 
 function emptyArr(): Arrangement {
   const byPos = () => Object.fromEntries(POSITIONS.map((p) => [p, [] as string[]]));
@@ -54,17 +56,19 @@ export default function Roster() {
   const nav = useNavigate();
 
   const [players, setPlayers] = useState<PP[]>([]);
+  const [coaches, setCoaches] = useState<CoachRow[]>([]);
   const [teamName, setTeamName] = useState("");
   const [arr, setArr] = useState<Arrangement>(emptyArr());
   const [problems, setProblems] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const load = useCallback(async () => {
     setProblems([]);
     setErr(null);
-    if (!slug) { setPlayers([]); setArr(emptyArr()); setTeamName(""); return; }
+    if (!slug) { setPlayers([]); setArr(emptyArr()); setTeamName(""); setCoaches([]); return; }
     const { data: team } = await supabase.from("teams").select("id, name").eq("slug", slug).maybeSingle();
     if (!team) { setErr(`No team "${slug}".`); return; }
     setTeamName(team.name);
@@ -73,6 +77,12 @@ export default function Roster() {
     const ps = (data as PP[]) ?? [];
     setPlayers(ps);
     setArr(buildArr(ps));
+    // Current coaches (authoritative source: the team_coaches view, not teams.coaches).
+    const { data: cs } = await supabase
+      .from("team_coaches")
+      .select("role, coach_legacy_id, coach_name")
+      .eq("team_slug", slug);
+    setCoaches((cs as CoachRow[]) ?? []);
   }, [slug]);
 
   useEffect(() => { void load(); }, [load]);
@@ -86,7 +96,9 @@ export default function Roster() {
     Object.fromEntries(POSITIONS.map((pos) => [pos, arr[group][pos].map(dsPlayer).filter(Boolean)]));
 
   // Client mirror of the server's domain.validate rules: surface lineup problems
-  // live so the user gets immediate feedback instead of a rejected save.
+  // live so the user gets immediate feedback instead of a rejected save. Only the
+  // tier caps are hard blocks — an injured player in the starting lineup is now
+  // allowed (it just needs a confirmation; see injuredStarters below).
   const issues = useMemo(() => {
     const out: string[] = [];
     for (const pos of POSITIONS) {
@@ -97,12 +109,19 @@ export default function Roster() {
     }
     if (arr.reserves.length > RESERVE_MAX)
       out.push(`Reserves: ${arr.reserves.length}/${RESERVE_MAX} — ${arr.reserves.length - RESERVE_MAX} too many`);
+    return out;
+  }, [arr, byId]);
+
+  // Injured players left in the starting lineup: allowed, but the manager must
+  // confirm (an injured player contributes nothing in the sim).
+  const injuredStarters = useMemo(() => {
+    const names: string[] = [];
     for (const pos of POSITIONS)
       for (const id of arr.starters[pos]) {
         const p = byId.get(id);
-        if (p?.is_injured) out.push(`${p.name} is injured and cannot start`);
+        if (p?.is_injured) names.push(p.name);
       }
-    return out;
+    return names;
   }, [arr, byId]);
 
   function update(mut: (d: Arrangement) => void) {
@@ -140,19 +159,32 @@ export default function Roster() {
       if (j < 0 || j >= list.length) return;
       [list[i], list[j]] = [list[j], list[i]];
     });
-  const onSlot = (pl: { id: string }, group: Group) => {
+  const onSlot = (pl: { id: string }, group: Group, position?: string) => {
     const p = byId.get(pl.id);
     if (!p) return;
     update((d) => {
       removeEverywhere(d, pl.id);
+      // Any player may go to any position; fall back to the card position only
+      // if a target wasn't supplied (e.g. legacy callers).
       if (group === "reserves") d.reserves.push(pl.id);
-      else d[group][p.position].push(pl.id);
+      else d[group][position ?? p.position].push(pl.id);
     });
   };
+
+  // Save asks for confirmation first if an injured player is in the starting
+  // lineup (allowed, but they contribute nothing in the sim).
+  function requestSave() {
+    if (injuredStarters.length > 0 && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    void save();
+  }
 
   async function save() {
     setProblems([]);
     setErr(null);
+    setConfirming(false);
     setSaving(true); // shows feedback through a slow first request (cold-start host)
     try {
       await apiFetch(`/teams/${slug}/arrangement`, { method: "PUT", body: JSON.stringify(arr) });
@@ -179,9 +211,30 @@ export default function Roster() {
 
   return (
     <section>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
         <h2>{teamName}{editable ? "" : <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginLeft: 10 }}>read-only</span>}</h2>
       </div>
+      {coaches.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16, fontSize: "var(--text-sm)", color: "var(--muted)" }}>
+          {ROLE_ORDER.map((role) => {
+            const c = coaches.find((x) => x.role === role);
+            if (!c) return null;
+            return (
+              <div key={role}>
+                <span style={{ fontWeight: "var(--weight-bold)" }}>{ROLE_LABEL[role]}:</span>{" "}
+                <a
+                  href={`#/coaches/${c.coach_legacy_id}`}
+                  onClick={(e) => { e.preventDefault(); nav(`/coaches/${c.coach_legacy_id}`); }}
+                  className="nha-navlink"
+                  style={{ color: "var(--muted)", textDecoration: "none" }}
+                >
+                  {c.coach_name}
+                </a>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {err && <Alert tone="error" style={{ marginBottom: 14 }}>{err}</Alert>}
       {problems.length > 0 && <Alert tone="error" title="Invalid lineup" items={problems} style={{ marginBottom: 14 }} />}
 
@@ -202,15 +255,30 @@ export default function Roster() {
           const p = dsPlayer(id);
           return p && <PlayerRow key={id} player={p} editable={editable} slot="reserves"
             canMoveUp={idx > 0} canMoveDown={idx < arr.reserves.length - 1}
-            onMoveUp={() => onMove(p, -1)} onMoveDown={() => onMove(p, 1)} onSlot={(g: Group) => onSlot(p, g)}
+            onMoveUp={() => onMove(p, -1)} onMoveDown={() => onMove(p, 1)} onSlot={(g: Group, pos?: string) => onSlot(p, g, pos)}
             onClick={() => nav(`/players/${id}`)} />;
         })}
       </div>
 
+      {editable && confirming && (
+        <Alert tone="warning" title="Injured player in starting lineup" style={{ marginTop: 16 }}>
+          {injuredStarters.length === 1
+            ? `${injuredStarters[0]} is injured and will contribute nothing this chunk.`
+            : `${injuredStarters.join(", ")} are injured and will contribute nothing this chunk.`}{" "}
+          Start them anyway?
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <Button variant="primary" onClick={save} disabled={saving}>
+              {saving ? "Saving…" : "Save anyway"}
+            </Button>
+            <Button onClick={() => setConfirming(false)} disabled={saving}>Cancel</Button>
+          </div>
+        </Alert>
+      )}
+
       {editable && (
         <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
-          <Button variant="primary" onClick={save} disabled={saving || issues.length > 0}
-            title={issues.length > 0 ? "Fill each position to its limit (and bench no injured starters) before saving" : undefined}>
+          <Button variant="primary" onClick={requestSave} disabled={saving || confirming || issues.length > 0}
+            title={issues.length > 0 ? "Fill each position to its limit before saving" : undefined}>
             {saving ? "Saving…" : "Save lineup"}
           </Button>
           <Button onClick={() => setArr(buildArr(players))} disabled={saving}>Reset</Button>

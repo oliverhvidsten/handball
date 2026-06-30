@@ -55,6 +55,10 @@ export default function PlayerDetail() {
     { games: 0, goals: 0, shots: 0, saves: 0 }
   );
   const isG = p.position === "Goalie";
+  const yrs = p.years_remaining;
+  const isExpired = yrs <= 0;
+  const yearsLeft = yrs > 1 ? `${yrs} yrs left` : yrs === 1 ? "1 yr left" : "expired";
+  const labelStyle: React.CSSProperties = { fontWeight: "var(--weight-bold)", color: "var(--muted)" };
 
   return (
     <section>
@@ -63,9 +67,15 @@ export default function PlayerDetail() {
         <Tag tone={POS_TONE[p.position] || "neutral"}>{p.position}</Tag>
         {p.is_injured && <Tag tone="red" solid>INJ</Tag>}
       </div>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        Age {p.age} · Contract {p.contract_term}yr / ${p.contract_value}M{p.years_remaining ? ` · ${p.years_remaining}yr left` : ""}
-      </p>
+      <div style={{ color: "var(--muted)", marginTop: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+        <span><span style={labelStyle}>Age</span> {p.age}</span>
+        <span>
+          <span style={labelStyle}>Contract</span> {p.contract_term}yr / ${p.contract_value}M ·{" "}
+          {isExpired
+            ? <span style={{ color: "var(--red-text)", fontWeight: "var(--weight-semibold)" }}>expired</span>
+            : yearsLeft}
+        </span>
+      </div>
 
       <div style={{ display: "flex", gap: 8, margin: "12px 0 22px" }}>
         <StatChip kind="offense" value={p.offense.toFixed(1)} />
@@ -110,7 +120,7 @@ export default function PlayerDetail() {
                 <div key={k} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "var(--text-sm)" }}>
                   <Tag tone={i.is_current ? "red" : "neutral"} size="sm">{i.year}</Tag>
                   <span>{i.injury_type}</span>
-                  <span style={{ color: "var(--muted)" }}>· {i.duration} games{i.is_current ? " · active" : ""}</span>
+                  <span style={{ color: "var(--muted)" }}>· {i.duration} {i.duration === 1 ? "period" : "periods"}{i.is_current ? " · active" : ""}</span>
                 </div>
               ))}
             </div>

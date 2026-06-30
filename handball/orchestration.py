@@ -142,14 +142,14 @@ class GameSimulatorAdapter:
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class RecordSink(Protocol):
-    def record_game(self, result: GameResult) -> None: ...
+    def record_game(self, result: GameResult, *, week: int | None = None) -> None: ...
 
 
 class InMemoryRecordSink:
     def __init__(self) -> None:
         self.games: list[GameResult] = []
 
-    def record_game(self, result: GameResult) -> None:
+    def record_game(self, result: GameResult, *, week: int | None = None) -> None:
         self.games.append(result)
 
 
@@ -199,7 +199,9 @@ class SeasonOrchestrator:
         self.gateway.publish(team.public_view())
         return True
 
-    def simulate_matchup(self, home_id: TeamId, away_id: TeamId) -> GameResult:
+    def simulate_matchup(
+        self, home_id: TeamId, away_id: TeamId, *, week: int | None = None
+    ) -> GameResult:
         home = self.team_repo.load(home_id)
         away = self.team_repo.load(away_id)
         result = self.engine.play(home, away)   # mutates records + season logs
@@ -208,7 +210,7 @@ class SeasonOrchestrator:
             self.team_repo.save(team)
             if self.gateway is not None:
                 self.gateway.publish(team.public_view())
-        self.record_sink.record_game(result)
+        self.record_sink.record_game(result, week=week)
         return result
 
     def standings(self) -> list[tuple[TeamId, tuple[int, int, int]]]:
