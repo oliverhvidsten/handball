@@ -187,6 +187,244 @@ def test_multi_team_owner_can_edit_each_owned_team(client, two_teams):
         assert r.status_code == 200, r.text
 
 
+# -- season simulation endpoints -------------------------------------------
+from handball import schedule_repository as sched_repo  # noqa: E402
+
+# _active_season() falls back to DEFAULT_SEASON when no games/season_state exist.
+_SEASON = 2026
+
+
+@pytest.fixture(autouse=True)
+def _clean_season_tables():
+    """season_state / schedule_games aren't in the shared truncate list; clear them
+    around each test so _active_season() and the run cursor start fresh."""
+    with _engine.begin() as c:
+        c.execute(text("truncate season_state, schedule_games restart identity cascade"))
+    yield
+    with _engine.begin() as c:
+        c.execute(text("truncate season_state, schedule_games restart identity cascade"))
+
+
+def _seed_one_week_schedule(season: int = _SEASON):
+    """Persist a single-week Boston@Denver fixture + a generated season_state, as if
+    /schedule/generate had run -- without invoking the heavy OR-Tools generator."""
+    sched_repo.init_season_state(_engine, season, schedule_seed=season, injury_seed=season)
+    sched_repo.save_schedule(
+        _engine, season,
+        {"weeks": [[{"team1": "Boston", "team2": "Denver", "matchup_type": "div"}]]},
+    )
+    sched_repo.mark_schedule_generated(_engine, season, season)
+
+
+def test_season_state_reports_cursor(client, two_teams):
+    _seed_one_week_schedule()
+    _as_manager("Boston")                        # any authenticated manager may read
+    s = client.get("/season/state").json()
+    assert s["season"] == _SEASON
+    assert s["schedule_generated"] is True
+    assert s["periods_run"] == 0
+    assert s["next_period"] == 1
+    assert s["total_periods"] == 5
+    assert s["queue_clear"] is True
+
+
+def test_run_period_persists_games_and_advances_cursor(client, two_teams):
+    _seed_one_week_schedule()
+    _as_manager("", role="commissioner")
+    # The run is a background job; the TestClient runs it to completion before the
+    # 202 returns, so by the next line the period has finished.
+    r = client.post("/periods/run")
+    assert r.status_code == 202, r.text
+    assert r.json()["run_status"] == "running"
+
+    with _engine.connect() as c:
+        n_games = c.execute(text("select count(*) from games where season=:s"), {"s": _SEASON}).scalar_one()
+        played = c.execute(text("select coalesce(sum(wins+losses+ties),0) from teams")).scalar_one()
+    assert n_games == 1                          # only the one persisted fixture
+    assert played == 2                          # one game => two team participations
+
+    state = client.get("/season/state").json()
+    assert state["run_status"] == "done"
+    assert state["periods_run"] == 1
+    assert state["next_period"] == 2
+
+    # a game row carries its week (regression guard: week used to land NULL)
+    with _engine.connect() as c:
+        assert c.execute(text("select week from games where season=:s"), {"s": _SEASON}).scalar_one() == 1
+
+
+def test_run_period_rejects_concurrent_run(client, two_teams):
+    _seed_one_week_schedule()
+    with _engine.begin() as c:
+        c.execute(text("update season_state set run_status='running' where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert "already running" in r.json()["detail"].lower()
+
+
+def test_run_period_requires_commissioner(client, two_teams):
+    _seed_one_week_schedule()
+    _as_manager("Boston")                        # plain manager
+    assert client.post("/periods/run").status_code == 403
+
+
+def test_run_period_blocked_without_schedule(client, two_teams):
+    _as_manager("", role="commissioner")         # no schedule seeded
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert "schedule" in r.json()["detail"].lower()
+
+
+def test_run_period_blocked_when_trade_queue_dirty(client, two_teams):
+    _seed_one_week_schedule()
+    # an accepted-but-unapproved trade must block a run
+    boston, denver = _uuid_of("Boston"), _uuid_of("Denver")
+    with _engine.begin() as c:
+        c.execute(
+            text("insert into trades (from_team_id, to_team_id, status) "
+                 "values (cast(:f as uuid), cast(:t as uuid), 'accepted')"),
+            {"f": boston, "t": denver},
+        )
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert "queue" in r.json()["detail"].lower()
+
+
+def test_run_period_blocked_when_season_complete(client, two_teams):
+    _seed_one_week_schedule()
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run = 5 where season = :s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert "complete" in r.json()["detail"].lower()
+
+
+def test_save_schedule_rejects_unknown_team(two_teams):
+    with pytest.raises(sched_repo.ScheduleError):
+        sched_repo.save_schedule(
+            _engine, _SEASON,
+            {"weeks": [[{"team1": "Boston", "team2": "Atlantis", "matchup_type": "div"}]]},
+        )
+
+
+def test_stale_running_blocks_run_until_reset(client, two_teams):
+    _seed_one_week_schedule()
+    # a 'running' row whose heartbeat is 10 min old == a dead worker
+    with _engine.begin() as c:
+        c.execute(
+            text("update season_state set run_status='running', run_period=1, "
+                 "updated_at = now() - interval '10 minutes' where season=:s"),
+            {"s": _SEASON},
+        )
+    _as_manager("", role="commissioner")
+
+    assert client.get("/season/state").json()["run_stale"] is True
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert "reset" in r.json()["detail"].lower()
+
+    assert client.post("/periods/reset").json()["run_status"] == "idle"
+    assert client.get("/season/state").json()["run_status"] == "idle"
+
+
+def test_reset_rolls_back_partial_period_games_and_records(client, two_teams):
+    _seed_one_week_schedule()
+    boston, denver = _uuid_of("Boston"), _uuid_of("Denver")
+    # simulate a partial run: one period-1 game written + records moved, then died
+    with _engine.begin() as c:
+        c.execute(
+            text("insert into games (season, week, home_team_id, away_team_id, home_score, away_score) "
+                 "values (:s, 1, cast(:h as uuid), cast(:a as uuid), 30, 20)"),
+            {"s": _SEASON, "h": boston, "a": denver},
+        )
+        c.execute(text("update teams set wins=1 where id=cast(:h as uuid)"), {"h": boston})
+        c.execute(text("update teams set losses=1 where id=cast(:a as uuid)"), {"a": denver})
+        c.execute(
+            text("update season_state set run_status='error', run_period=1, run_error='boom' where season=:s"),
+            {"s": _SEASON},
+        )
+    _as_manager("", role="commissioner")
+
+    r = client.post("/periods/reset")
+    assert r.status_code == 200, r.text
+    assert r.json()["rolled_back_games"] == 1
+
+    with _engine.connect() as c:
+        assert c.execute(text("select count(*) from games where season=:s"), {"s": _SEASON}).scalar_one() == 0
+        rec = c.execute(text("select wins, losses, ties from teams where id=cast(:h as uuid)"), {"h": boston}).first()
+        assert tuple(rec) == (0, 0, 0)         # the win was rolled back
+        rec = c.execute(text("select wins, losses, ties from teams where id=cast(:a as uuid)"), {"a": denver}).first()
+        assert tuple(rec) == (0, 0, 0)         # the loss was rolled back
+    assert client.get("/season/state").json()["run_status"] == "idle"
+
+
+def test_reset_rejected_while_genuinely_running(client, two_teams):
+    _seed_one_week_schedule()
+    with _engine.begin() as c:   # fresh heartbeat => a live run, not stale
+        c.execute(
+            text("update season_state set run_status='running', run_period=1, updated_at=now() where season=:s"),
+            {"s": _SEASON},
+        )
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/reset")
+    assert r.status_code == 409
+    assert "in progress" in r.json()["detail"].lower()
+
+
+# -- offseason endpoints ---------------------------------------------------
+def test_advance_requires_complete_season(client, two_teams):
+    # season_state exists but the regular season isn't finished
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=2 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/season/advance")
+    assert r.status_code == 409
+    assert "regular season" in r.json()["detail"].lower()
+
+
+def test_advance_requires_commissioner(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("Boston")  # plain manager
+    assert client.post("/season/advance").status_code == 403
+    assert client.get("/retirement/candidates").status_code == 403
+
+
+def test_advance_season_happy_path(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+
+    r = client.post("/season/advance")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["new_season"] == _SEASON + 1
+    # records zeroed, new season opened, players aged
+    assert client.get("/season/state").json()["season"] == _SEASON + 1
+    with _engine.connect() as c:
+        assert c.execute(text("select 1 from season_state where season=:s"), {"s": _SEASON + 1}).first() is not None
+
+
+def test_lineup_save_does_not_wipe_awards(client, two_teams):
+    # an award written for a player must survive a routine roster save() of their team
+    repo = two_teams
+    boston = repo.load("Boston")
+    pid = boston.starters["Forward"][0].id
+    with _engine.begin() as c:
+        puid = c.execute(text("select id from players where legacy_id=:l"), {"l": pid}).scalar_one()
+        c.execute(text("insert into awards (player_id, season, award) values (:p, :s, 'League MVP')"),
+                  {"p": puid, "s": _SEASON})
+    repo.save(repo.load("Boston"))   # routine save (e.g. a lineup edit)
+    with _engine.connect() as c:
+        assert c.execute(text("select count(*) from awards where player_id=:p"), {"p": puid}).scalar_one() == 1
+
+
 def test_internal_trade_auto_accepts_then_commissioner_commits(client, two_teams):
     repo = two_teams
     # one manager owns both teams -> trade between them is "internal"

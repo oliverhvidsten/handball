@@ -26,8 +26,6 @@ Author: relational backend
 """
 from __future__ import annotations
 
-import json
-
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
@@ -95,7 +93,10 @@ class PostgresTeamRepository:
         injuries = self._child_map(conn, "injuries",
                                    "year, injury_type, duration, games_remaining, is_current",
                                    uuids)
-        awards = self._child_map(conn, "awards", "award", uuids)
+        # awards are league-assigned data (written by the offseason), NOT part of the
+        # roster snapshot -- they're read by the frontend straight from the awards
+        # table. Keeping them off the domain object means a roster save() can't wipe
+        # them (see _replace_children).
 
         # Build the team_from_dict-shaped snapshot, reusing the existing
         # Player/InjuryReport reconstruction + validate-on-load.
@@ -117,7 +118,7 @@ class PostgresTeamRepository:
                     "active_injury": any(r["is_current"] for r in inj_rows),
                     "injuries": injuries_list,
                 },
-                "awards_won": [json.loads(r["award"]) for r in awards.get(p["id"], [])],
+                "awards_won": [],  # decoupled from the repo; see awards note above
                 # current_season_log intentionally omitted -> Player default (empty)
             }
             group = p["slot_group"]
@@ -228,8 +229,10 @@ class PostgresTeamRepository:
 
     @staticmethod
     def _replace_children(conn, puid, player) -> None:
+        # Injuries belong to the roster snapshot and round-trip through save(); awards
+        # do NOT -- they're league-assigned and managed by the offseason, so a routine
+        # roster save() must not touch (and wipe) them.
         conn.execute(text("delete from injuries where player_id = :p"), {"p": puid})
-        conn.execute(text("delete from awards where player_id = :p"), {"p": puid})
         for ord_, rec in enumerate(player.injury_log.injuries):
             year, itype, duration, remaining, current = rec
             conn.execute(
@@ -238,11 +241,6 @@ class PostgresTeamRepository:
                      "values (:p, :y, :it, :d, :gr, :cur, :o)"),
                 {"p": puid, "y": year, "it": itype, "d": duration, "gr": remaining,
                  "cur": bool(current), "o": ord_},
-            )
-        for ord_, award in enumerate(player.awards_won):
-            conn.execute(
-                text("insert into awards (player_id, award, ord) values (:p, :a, :o)"),
-                {"p": puid, "a": json.dumps(award), "o": ord_},
             )
 
 

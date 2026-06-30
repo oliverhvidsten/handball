@@ -7,7 +7,7 @@ import { StatCard, Alert, EmptyState, Button } from "../ds";
 interface Issue { text: string; to: string; }
 
 export default function Dashboard() {
-  const { activeTeam, teams } = useAuth();
+  const { activeTeam } = useAuth();
   const nav = useNavigate();
   const [season, setSeason] = useState<number | null>(null);
   const [games, setGames] = useState(0);
@@ -57,7 +57,6 @@ export default function Dashboard() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, margin: "16px 0 28px" }}>
         <StatCard label="Season" value={season ?? "—"} sub={season ? "current" : "no games yet"} />
         <StatCard label="Games played" value={games} accent="var(--blue-600)" />
-        <StatCard label="Your teams" value={teams.length} accent="var(--purple-600)" />
         {activeTeam && (
           <StatCard label="Record" value={`${activeTeam.wins}-${activeTeam.losses}-${activeTeam.ties}`} accent="var(--amber-600)" />
         )}

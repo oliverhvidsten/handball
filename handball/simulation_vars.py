@@ -55,9 +55,26 @@ def injury_severity(injury_type):
     return "unknown"
 
 
+# Injuries are rolled and applied at the END of each season chunk (1/5 of the
+# season; see season.PERIODS). Duration is measured in CHUNKS, not games, and a
+# player sits out that many subsequent chunks before recovering. Unknown-severity
+# injuries fall back to one chunk.
+INJURY_CHUNK_DURATION = {"minor": 1, "moderate": 2, "major": 3, "unknown": 1}
+
+# A player's per-game injury_risk is rolled once per chunk; scale it up so the
+# season-long injury rate stays in the same ballpark as the old per-game model.
+INJURY_CHUNK_RISK_SCALE = 5
+
+
 # Major injuries can damage a player's development.
 MAJOR_INJURY_IMPACT_CHANCE = 0.5   # chance a major injury affects trajectory
 INJURY_GROWTH_PENALTY = 0.9          # young players: multiply max stats (slows growth)
 INJURY_DECLINE_MULTIPLIER = 1.3      # older players: multiply decline_rate
 MAX_DECLINE_RATE = 0.5               # cap on decline_rate
+
+
+# Offseason rollover ("advance season").
+RETIREMENT_CANDIDATE_AGE = 35   # players older than this are offered to the commissioner
+                                # as retirement candidates (the commissioner decides).
+DRAFT_ROUNDS = 2                # rounds of draft-pick order seeded from final standings
 

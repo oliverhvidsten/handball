@@ -6,12 +6,16 @@ import Dashboard from "./pages/Dashboard";
 import Teams from "./pages/Teams";
 import Roster from "./pages/Roster";
 import PlayerDetail from "./pages/PlayerDetail";
+import Players from "./pages/Players";
+import Coaches from "./pages/Coaches";
+import CoachDetail from "./pages/CoachDetail";
 import Standings from "./pages/Standings";
 import Leaderboard from "./pages/Leaderboard";
 import Schedule from "./pages/Schedule";
 import Trades from "./pages/Trades";
 import Draft from "./pages/Draft";
 import Commissioner from "./pages/Commissioner";
+import Account from "./pages/Account";
 import { usePendingTradeCount } from "./hooks";
 
 // `scope` partitions the nav: "team" pages re-render on the TeamSwitcher's
@@ -22,6 +26,8 @@ const NAV = [
   { label: "Roster", to: "/roster", scope: "team" },
   { label: "Trades", to: "/trades", scope: "team" },
   { label: "Teams", to: "/teams", scope: "league" },
+  { label: "Players", to: "/players", scope: "league" },
+  { label: "Coaches", to: "/coaches", scope: "league" },
   { label: "Standings", to: "/standings", scope: "league" },
   { label: "Leaders", to: "/leaderboard", scope: "league" },
   { label: "Schedule", to: "/schedule", scope: "league" },
@@ -76,6 +82,7 @@ export default function App() {
         teamSwitcher={switcher}
         onBrandClick={() => nav("/dashboard")}
         onBell={() => nav("/trades")}
+        onAccount={() => nav("/account")}
         onSignOut={signOut}
       />
       <main style={{ maxWidth: "var(--container-max)", margin: "0 auto", padding: "24px 20px" }}>
@@ -84,7 +91,10 @@ export default function App() {
           <Route path="/roster" element={<Roster />} />
           <Route path="/teams" element={<Teams />} />
           <Route path="/teams/:slug" element={<Roster />} />
+          <Route path="/players" element={<Players />} />
           <Route path="/players/:legacyId" element={<PlayerDetail />} />
+          <Route path="/coaches" element={<Coaches />} />
+          <Route path="/coaches/:legacyId" element={<CoachDetail />} />
           <Route path="/standings" element={<Standings />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/schedule" element={<Schedule />} />
@@ -95,6 +105,7 @@ export default function App() {
               to /commissioner over to /dashboard. The nav link stays gated, and
               the panel's actions are enforced server-side (commissioner + RLS). */}
           <Route path="/commissioner" element={<Commissioner />} />
+          <Route path="/account" element={<Account />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </main>

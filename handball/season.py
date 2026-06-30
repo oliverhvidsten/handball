@@ -126,8 +126,8 @@ class SeasonRunner:
         self.injuries = injuries
 
     def run_week(self, n: int) -> list[GameResult]:
-        """Pull lineups for the week's teams, play each game, process injuries
-        after each game (next-man-up substitutions are persisted/published)."""
+        """Pull lineups for the week's teams, then play each game. Injuries are a
+        chunk-level event (see run_period); a single week never rolls them."""
         matchups = list(self.schedule.week(n))
         for tid in sorted({t for pair in matchups for t in pair}):
             self.orch.apply_manager_lineup(tid)
@@ -138,24 +138,26 @@ class SeasonRunner:
 
     def run_period(self, p: int) -> list[GameResult]:
         """Pull every participating team's lineup once at the start of the
-        period (the mailbox cadence: managers edit between periods), then play
-        every game across the period's weeks in order."""
+        period (the mailbox cadence: managers edit between periods), play every
+        game across the period's weeks in order, then -- once the whole chunk is
+        done -- roll and apply injuries for the period."""
         weeks_per_period = WEEKS_PER_PERIOD
         start = (p - 1) * weeks_per_period + 1
         end = min(p * weeks_per_period, self.schedule.num_weeks)
 
         all_matchups = self.schedule.period(p)
-        for tid in sorted({t for pair in all_matchups for t in pair}):
+        team_ids = sorted({t for pair in all_matchups for t in pair})
+        for tid in team_ids:
             self.orch.apply_manager_lineup(tid)
 
         results: list[GameResult] = []
         for w in range(start, end + 1):
             for home, away in self.schedule.week(w):
                 results.append(self._play_game(home, away, week=w))
+
+        if self.injuries is not None:
+            self.injuries.process_period_end(self.orch, team_ids, chunk=p)
         return results
 
     def _play_game(self, home: TeamId, away: TeamId, week: int) -> GameResult:
-        result = self.orch.simulate_matchup(home, away)
-        if self.injuries is not None:
-            self.injuries.process_matchup(self.orch, home, away, week=week)
-        return result
+        return self.orch.simulate_matchup(home, away, week=week)

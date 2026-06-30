@@ -13,9 +13,18 @@ interface GameRow {
   away: { name: string } | null;
 }
 
+interface FixtureRow {
+  id: string;
+  season: number;
+  week: number;
+  home: { name: string } | null;
+  away: { name: string } | null;
+}
+
 export default function Schedule() {
   const [tab, setTab] = useState("results");
   const [games, setGames] = useState<GameRow[]>([]);
+  const [upcoming, setUpcoming] = useState<FixtureRow[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -32,6 +41,38 @@ export default function Schedule() {
       });
   }, []);
 
+  // Upcoming fixtures: the persisted schedule for the latest season, restricted to
+  // weeks that haven't been played yet (max played week derived from games above).
+  useEffect(() => {
+    (async () => {
+      const { data: seasonRow } = await supabase
+        .from("schedule_games")
+        .select("season")
+        .order("season", { ascending: false })
+        .limit(1);
+      const season = (seasonRow as { season: number }[] | null)?.[0]?.season;
+      if (season == null) { setUpcoming([]); return; }
+
+      const { data: playedRow } = await supabase
+        .from("games")
+        .select("week")
+        .eq("season", season)
+        .order("week", { ascending: false })
+        .limit(1);
+      const playedThrough = (playedRow as { week: number | null }[] | null)?.[0]?.week ?? 0;
+
+      const { data, error } = await supabase
+        .from("schedule_games")
+        .select("id, season, week, home:home_team_id(name), away:away_team_id(name)")
+        .eq("season", season)
+        .gt("week", playedThrough ?? 0)
+        .order("week", { ascending: true })
+        .limit(80);
+      if (error) setErr(error.message);
+      else setUpcoming((data as any as FixtureRow[]) ?? []);
+    })();
+  }, []);
+
   return (
     <section>
       <h2 style={{ marginBottom: 16 }}>Schedule &amp; Results</h2>
@@ -39,7 +80,33 @@ export default function Schedule() {
       {err && <Alert tone="error">{err}</Alert>}
 
       {tab === "upcoming" ? (
-        <EmptyState title="Upcoming games coming soon" message="The schedule isn't persisted yet, so upcoming fixtures aren't available. Recent results are under the Results tab." />
+        upcoming.length === 0 ? (
+          <EmptyState title="No upcoming games" message="Generate a schedule from the Commissioner page, or the season has finished playing out." />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {upcoming.map((f) => {
+              const away = f.away?.name ?? "Away";
+              const home = f.home?.name ?? "Home";
+              return (
+                <div
+                  key={f.id}
+                  className="nha-row"
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
+                    background: "var(--surface-card)", border: "1px solid var(--line)", borderRadius: "var(--radius-md)",
+                  }}
+                >
+                  <span style={{ fontSize: "var(--text-xs)", color: "var(--muted)", width: 90 }}>
+                    Wk {f.week} · S{f.season}
+                  </span>
+                  <span style={{ flex: 1, fontFamily: "var(--font-display)", fontWeight: 700 }}>
+                    {away} <span style={{ color: "var(--muted)" }}>@</span> {home}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )
       ) : games.length === 0 ? (
         <EmptyState title="No games played yet" message="Results appear once the season has been simulated." />
       ) : (

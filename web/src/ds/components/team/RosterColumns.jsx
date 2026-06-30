@@ -68,7 +68,7 @@ export function RosterColumns({
                     canMoveDown={idx < list.length - 1}
                     onMoveUp={onMove ? () => onMove(pl, -1) : undefined}
                     onMoveDown={onMove ? () => onMove(pl, 1) : undefined}
-                    onSlot={onSlot ? (g) => onSlot(pl, g) : undefined}
+                    onSlot={onSlot ? (g, pos) => onSlot(pl, g, pos) : undefined}
                     onClick={onPlayerClick ? () => onPlayerClick(pl) : undefined}
                   />
                 ))

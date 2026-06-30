@@ -5,7 +5,7 @@ import { IconButton } from "../forms/IconButton.jsx";
 import { Menu } from "../forms/Menu.jsx";
 
 const POS_TONE = { Forward: "neutral", Midfielder: "neutral", Defense: "neutral", Goalie: "neutral" };
-const GROUP_LABEL = { starters: "Starters", bench: "Bench", reserves: "Reserves" };
+const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"];
 
 /**
  * NHA PlayerRow — one roster player: name, position tag, O/D/G stat chips,
@@ -29,13 +29,24 @@ export function PlayerRow({
   const isGoalie = p.position === "Goalie";
   const goalieVisible = showGoalie != null ? showGoalie : isGoalie;
 
+  // Any player may be placed at any position (Goalie included), so the move
+  // menu offers every starter/bench position explicitly rather than a single
+  // "Move to Starters/Bench" that auto-picked the player's card position.
   const menuItems = [
     { label: "Move up", onClick: onMoveUp, disabled: !canMoveUp },
     { label: "Move down", onClick: onMoveDown, disabled: !canMoveDown },
     { divider: true },
-    ...["starters", "bench", "reserves"]
-      .filter((g) => g !== slot)
-      .map((g) => ({ label: `Move to ${GROUP_LABEL[g]}`, onClick: onSlot ? () => onSlot(g) : undefined })),
+    ...POSITIONS.map((pos) => ({
+      label: `Start: ${pos}`,
+      onClick: onSlot ? () => onSlot("starters", pos) : undefined,
+    })),
+    { divider: true },
+    ...POSITIONS.map((pos) => ({
+      label: `Bench: ${pos}`,
+      onClick: onSlot ? () => onSlot("bench", pos) : undefined,
+    })),
+    { divider: true },
+    { label: "Move to Reserves", onClick: onSlot ? () => onSlot("reserves") : undefined },
   ];
 
   return (

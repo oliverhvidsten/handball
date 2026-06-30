@@ -537,6 +537,39 @@ class TestGameSimulator:
                 break
         assert any_nonzero
 
+    def test_injured_players_contribute_nothing(self, sample_team):
+        """An injured player's sampled stats are multiplied out to zero, so a team
+        whose entire active roster is injured produces zero offense/defense and a
+        zero goalie value."""
+        import numpy as np
+        np.random.seed(0)
+        home = sample_team("Home")
+        away = sample_team("Away")
+        for group in (home.starters, home.bench):    # everyone who takes the field
+            for plist in group.values():
+                for p in plist:
+                    p.is_injured = True
+
+        game = GameSimulator(home, away)
+        home_stats, _, _, _ = game.init_stats()
+
+        assert home_stats["offense"] == 0
+        assert home_stats["defense"] == 0
+        assert home_stats["goalie"] == 0
+        assert home_stats["bench_goalie"] == 0
+
+    def test_healthy_team_contributes_positive(self, sample_team):
+        """Control for the injured-contributes-nothing test: a healthy team has
+        positive offense and a positive goalie value."""
+        import numpy as np
+        np.random.seed(0)
+        home = sample_team("Home")
+        away = sample_team("Away")
+        game = GameSimulator(home, away)
+        home_stats, _, _, _ = game.init_stats()
+        assert home_stats["offense"] > 0
+        assert home_stats["goalie"] > 0
+
 
 class TestStatTracker:
     """Test the StatTracker class"""

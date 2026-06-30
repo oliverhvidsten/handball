@@ -52,13 +52,15 @@ class GameSimulator():
             minutes_list = [STARTER_MINUTES if i < 9 else BENCH_MINUTES for i in range(15)]
 
             ## Calculate offense stats for each player (weighted by position)
-            # Sample stats for each player
-            start_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.starters["Forward"]]
-            start_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.starters["Midfielder"]]
-            start_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.starters["Defense"]]
-            bench_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) for forward in team_obj.bench["Forward"]]
-            bench_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) for middie in team_obj.bench["Midfielder"]]
-            bench_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) for defense in team_obj.bench["Defense"]]
+            # Sample stats for each player. An injured player contributes nothing
+            # (multiplied by 0); the normal is still drawn so RNG draw counts --
+            # and seeded reproducibility -- are unaffected by who is injured.
+            start_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) * (not forward.is_injured) for forward in team_obj.starters["Forward"]]
+            start_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) * (not middie.is_injured) for middie in team_obj.starters["Midfielder"]]
+            start_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) * (not defense.is_injured) for defense in team_obj.starters["Defense"]]
+            bench_forward_offense_raw = [np.random.normal(forward.offense, forward.variance) * (not forward.is_injured) for forward in team_obj.bench["Forward"]]
+            bench_middie_offense_raw = [np.random.normal(middie.offense, middie.variance) * (not middie.is_injured) for middie in team_obj.bench["Midfielder"]]
+            bench_defense_offense_raw = [np.random.normal(defense.offense, defense.variance) * (not defense.is_injured) for defense in team_obj.bench["Defense"]]
 
             # Weight each stat by position importance and multiply by minutes played
             start_forward_offense = [stat * MAIN_STAT for stat in start_forward_offense_raw]
@@ -85,13 +87,13 @@ class GameSimulator():
 
 
             ## Calculate defense stats for each player (weighted by position)
-            # Sample stats for each player
-            start_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.starters["Forward"]]
-            start_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.starters["Midfielder"]]
-            start_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.starters["Defense"]]
-            bench_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) for forward in team_obj.bench["Forward"]]
-            bench_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) for middie in team_obj.bench["Midfielder"]]
-            bench_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) for defense in team_obj.bench["Defense"]]
+            # Sample stats for each player (injured players contribute nothing).
+            start_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) * (not forward.is_injured) for forward in team_obj.starters["Forward"]]
+            start_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) * (not middie.is_injured) for middie in team_obj.starters["Midfielder"]]
+            start_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) * (not defense.is_injured) for defense in team_obj.starters["Defense"]]
+            bench_forward_defense_raw = [np.random.normal(forward.defense, forward.variance) * (not forward.is_injured) for forward in team_obj.bench["Forward"]]
+            bench_middie_defense_raw = [np.random.normal(middie.defense, middie.variance) * (not middie.is_injured) for middie in team_obj.bench["Midfielder"]]
+            bench_defense_defense_raw = [np.random.normal(defense.defense, defense.variance) * (not defense.is_injured) for defense in team_obj.bench["Defense"]]
 
             # Weight each stat by position importance
             start_forward_defense = [stat * SECONDARY_STAT for stat in start_forward_defense_raw]
@@ -109,9 +111,11 @@ class GameSimulator():
             defense = sum(np.array(all_defense_stats) * (np.array(minutes_list) / 60))
 
 
-            ## Calculate goalies' stats
-            goalie = np.random.normal(team_obj.starters["Goalie"][0].goalie_skill, team_obj.starters["Goalie"][0].variance) * 4
-            goalie_reserve = np.random.normal(team_obj.bench["Goalie"][0].goalie_skill, team_obj.bench["Goalie"][0].variance) * 4
+            ## Calculate goalies' stats (an injured goalie contributes nothing)
+            start_goalie = team_obj.starters["Goalie"][0]
+            bench_goalie = team_obj.bench["Goalie"][0]
+            goalie = np.random.normal(start_goalie.goalie_skill, start_goalie.variance) * 4 * (not start_goalie.is_injured)
+            goalie_reserve = np.random.normal(bench_goalie.goalie_skill, bench_goalie.variance) * 4 * (not bench_goalie.is_injured)
 
             # Build combined performance list (15 non-goalies + 2 goalies = 17 players)
             # Goalies don't contribute to offense/defense, so their offense contribution is 0

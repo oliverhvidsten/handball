@@ -27,7 +27,6 @@ from __future__ import annotations
 import random
 from typing import Callable, Iterable
 
-from handball.injury_service import InjuryService
 from handball.injury_simulator import InjurySimulator
 from handball.league_views import DEFAULT_RULES, RosterRules, TeamId
 from handball.orchestration import (
@@ -150,7 +149,7 @@ def build_production_league(  # pragma: no cover - live wiring
     gateway + the real GameSimulator, plus injuries and the postseason
     services. `seed` makes the injury RNG reproducible."""
     orch = build_production_orchestrator(datafiles_dir, sheet_id, allow_tie=allow_tie)
-    injuries = InjurySimulator(InjuryService(DEFAULT_RULES), rng=random.Random(seed), year=year)
+    injuries = InjurySimulator(rng=random.Random(seed), year=year)
     return LeagueOperations(orch, schedule=schedule, injuries=injuries)
 
 
@@ -180,7 +179,7 @@ def build_production_league_pg(
         engine=GameSimulatorAdapter(allow_tie=allow_tie),
         record_sink=PostgresRecordSink(engine, season=year),
     )
-    injuries = InjurySimulator(InjuryService(DEFAULT_RULES), rng=random.Random(seed), year=year)
+    injuries = InjurySimulator(rng=random.Random(seed), year=year)
     return LeagueOperations(orch, schedule=schedule, injuries=injuries)
 
 
