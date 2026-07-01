@@ -85,6 +85,38 @@ function computeTeamStats(arr: Arrangement, byId: Map<string, PP>): { offense: n
   return { offense, defense };
 }
 
+// Large, stacked variants of the player-card StatChip (see
+// ds/components/data/StatChip.jsx) -- same offense/defense color tokens,
+// scaled up into standalone tiles for the team-level summary.
+function TeamStatBox({ kind, label, value }: { kind: "offense" | "defense"; label: string; value: number }) {
+  const bg = kind === "offense" ? "var(--stat-offense-bg)" : "var(--stat-defense-bg)";
+  const fg = kind === "offense" ? "var(--stat-offense-text)" : "var(--stat-defense-text)";
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 2,
+        minWidth: 100,
+        padding: "10px 20px",
+        background: bg,
+        color: fg,
+        borderRadius: "var(--radius-md)",
+        fontFamily: "var(--font-mono)",
+      }}
+    >
+      <span style={{ fontSize: "var(--text-2xs)", fontWeight: "var(--weight-bold)", letterSpacing: "0.05em", opacity: 0.75 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: "var(--text-2xl)", fontWeight: "var(--weight-black)", fontVariantNumeric: "tabular-nums" }}>
+        {value.toFixed(1)}
+      </span>
+    </div>
+  );
+}
+
 export default function Roster() {
   // The "/teams/:slug" route views any team (read-only unless owned); the
   // "/roster" nav entry has no param and follows the TeamSwitcher selection.
@@ -251,36 +283,36 @@ export default function Roster() {
 
   return (
     <section>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
-        <h2>{teamName}{editable ? "" : <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginLeft: 10 }}>read-only</span>}</h2>
+      <h2 style={{ marginBottom: 8 }}>{teamName}{editable ? "" : <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginLeft: 10 }}>read-only</span>}</h2>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+        {coaches.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "var(--text-sm)", color: "var(--muted)" }}>
+            {ROLE_ORDER.map((role) => {
+              const c = coaches.find((x) => x.role === role);
+              if (!c) return null;
+              return (
+                <div key={role}>
+                  <span style={{ fontWeight: "var(--weight-bold)" }}>{ROLE_LABEL[role]}:</span>{" "}
+                  <a
+                    href={`#/coaches/${c.coach_legacy_id}`}
+                    onClick={(e) => { e.preventDefault(); nav(`/coaches/${c.coach_legacy_id}`); }}
+                    className="nha-navlink"
+                    style={{ color: "var(--muted)", textDecoration: "none" }}
+                  >
+                    {c.coach_name}
+                  </a>
+                </div>
+              );
+            })}
+          </div>
+        ) : <div />}
         {players.length > 0 && (
-          <div style={{ display: "flex", gap: 14, fontSize: "var(--text-sm)", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
-            <span><span style={{ fontWeight: "var(--weight-bold)", color: "var(--text-soft)" }}>Off</span> {teamStats.offense.toFixed(1)}</span>
-            <span><span style={{ fontWeight: "var(--weight-bold)", color: "var(--text-soft)" }}>Def</span> {teamStats.defense.toFixed(1)}</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <TeamStatBox kind="offense" label="OFFENSE" value={teamStats.offense} />
+            <TeamStatBox kind="defense" label="DEFENSE" value={teamStats.defense} />
           </div>
         )}
       </div>
-      {coaches.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16, fontSize: "var(--text-sm)", color: "var(--muted)" }}>
-          {ROLE_ORDER.map((role) => {
-            const c = coaches.find((x) => x.role === role);
-            if (!c) return null;
-            return (
-              <div key={role}>
-                <span style={{ fontWeight: "var(--weight-bold)" }}>{ROLE_LABEL[role]}:</span>{" "}
-                <a
-                  href={`#/coaches/${c.coach_legacy_id}`}
-                  onClick={(e) => { e.preventDefault(); nav(`/coaches/${c.coach_legacy_id}`); }}
-                  className="nha-navlink"
-                  style={{ color: "var(--muted)", textDecoration: "none" }}
-                >
-                  {c.coach_name}
-                </a>
-              </div>
-            );
-          })}
-        </div>
-      )}
       {err && <Alert tone="error" style={{ marginBottom: 14 }}>{err}</Alert>}
       {problems.length > 0 && <Alert tone="error" title="Invalid lineup" items={problems} style={{ marginBottom: 14 }} />}
 
