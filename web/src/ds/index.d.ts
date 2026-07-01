@@ -38,4 +38,5 @@ export const EmptyState: C;
 export const Toast: C;
 
 export const DraftOrderRow: C;
+export const DraftPickBoard: C;
 export const AuthCard: C;

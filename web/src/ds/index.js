@@ -30,4 +30,5 @@ export { EmptyState } from "./components/feedback/EmptyState.jsx";
 export { Toast } from "./components/feedback/Toast.jsx";
 
 export { DraftOrderRow } from "./components/draft/DraftOrderRow.jsx";
+export { DraftPickBoard } from "./components/draft/DraftPickBoard.jsx";
 export { AuthCard } from "./components/auth/AuthCard.jsx";

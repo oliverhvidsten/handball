@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
-import { RosterColumns, PlayerRow, Alert, Button, Toast, EmptyState } from "../ds";
+import { RosterColumns, PlayerRow, Alert, Button, Toast, EmptyState, DraftPickBoard } from "../ds";
 import { ROLE_LABEL, ROLE_ORDER } from "../lib/coaches";
 
 const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"] as const;
@@ -31,6 +31,7 @@ interface Arrangement {
   reserves: string[];
 }
 interface CoachRow { role: string; coach_legacy_id: string; coach_name: string; }
+interface PickRow { id: string; season: number; round: number; originalTeam: string; }
 
 function emptyArr(): Arrangement {
   const byPos = () => Object.fromEntries(POSITIONS.map((p) => [p, [] as string[]]));
@@ -128,6 +129,8 @@ export default function Roster() {
 
   const [players, setPlayers] = useState<PP[]>([]);
   const [coaches, setCoaches] = useState<CoachRow[]>([]);
+  const [picks, setPicks] = useState<PickRow[]>([]);
+  const [activeSeason, setActiveSeason] = useState<number | null>(null);
   const [teamName, setTeamName] = useState("");
   const [arr, setArr] = useState<Arrangement>(emptyArr());
   const [problems, setProblems] = useState<string[]>([]);
@@ -154,9 +157,41 @@ export default function Roster() {
       .select("role, coach_legacy_id, coach_name")
       .eq("team_slug", slug);
     setCoaches((cs as CoachRow[]) ?? []);
+    // Draft picks the team currently holds -- undrafted (used=false) rows are
+    // exactly the rolling 10-year future window maintained by offseason.py's
+    // _extend_future_picks/_seed_draft_order.
+    const { data: pk, error: pkErr } = await supabase
+      .from("draft_picks")
+      .select("id, season, round, original:original_team_id(name)")
+      .eq("holder_team_id", team.id)
+      .eq("used", false)
+      .order("season", { ascending: true })
+      .order("round", { ascending: true });
+    if (pkErr) { setErr(pkErr.message); return; }
+    setPicks(
+      ((pk as any[]) ?? []).map((r) => ({
+        id: r.id,
+        season: r.season,
+        round: r.round,
+        originalTeam: r.original?.name ?? team.name,
+      }))
+    );
   }, [slug]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Active season fetched once (independent of the selected team) so the
+  // draft-pick board knows which 10 years to render.
+  useEffect(() => {
+    apiFetch<{ season: number }>("/season/state", { method: "GET" })
+      .then((s) => setActiveSeason(s.season))
+      .catch(() => {}); // non-fatal: the picks section just stays empty
+  }, []);
+
+  const pickYears = useMemo(
+    () => (activeSeason == null ? [] : Array.from({ length: 10 }, (_, i) => activeSeason + 1 + i)),
+    [activeSeason]
+  );
 
   const byId = useMemo(() => new Map(players.map((p) => [p.legacy_id, p])), [players]);
   const teamStats = useMemo(() => computeTeamStats(arr, byId), [arr, byId]);
@@ -362,6 +397,9 @@ export default function Roster() {
           <Button onClick={() => setArr(buildArr(players))} disabled={saving}>Reset</Button>
         </div>
       )}
+
+      <h3 style={{ margin: "20px 0 8px" }}>Draft Picks</h3>
+      <DraftPickBoard years={pickYears} picks={picks} />
 
       {toast && (
         <div style={{ position: "fixed", right: 20, bottom: 20, zIndex: 80 }}>
