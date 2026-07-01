@@ -85,9 +85,9 @@ function computeTeamStats(arr: Arrangement, byId: Map<string, PP>): { offense: n
   return { offense, defense };
 }
 
-// Large, stacked variants of the player-card StatChip (see
-// ds/components/data/StatChip.jsx) -- same offense/defense color tokens,
-// scaled up into standalone tiles for the team-level summary.
+// Team-level variant of the player-card StatChip (see
+// ds/components/data/StatChip.jsx) -- same offense/defense color tokens and
+// pill shape, scaled up into a standalone tile, laid out side by side.
 function TeamStatBox({ kind, label, value }: { kind: "offense" | "defense"; label: string; value: number }) {
   const bg = kind === "offense" ? "var(--stat-offense-bg)" : "var(--stat-defense-bg)";
   const fg = kind === "offense" ? "var(--stat-offense-text)" : "var(--stat-defense-text)";
@@ -307,7 +307,7 @@ export default function Roster() {
           </div>
         ) : <div />}
         {players.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
             <TeamStatBox kind="offense" label="OFFENSE" value={teamStats.offense} />
             <TeamStatBox kind="defense" label="DEFENSE" value={teamStats.defense} />
           </div>
