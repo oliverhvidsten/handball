@@ -120,6 +120,74 @@ def test_advance_season_full_rollover():
         assert c.execute(text("select 1 from season_state where season=:s"), {"s": _SEASON + 1}).first() is not None
 
 
+def test_advance_season_extends_future_pick_window():
+    with _engine.begin() as c:
+        _team(c, "Alpha", wins=5)
+        _team(c, "Bravo", wins=1)
+
+    offseason.advance_season(_engine, _SEASON, ["Alpha", "Bravo"])
+
+    with _engine.connect() as c:
+        # real next season (_SEASON+1) plus a full 10-year placeholder window
+        seasons = {r[0] for r in c.execute(text("select distinct season from draft_picks")).all()}
+        assert seasons == set(range(_SEASON + 1, _SEASON + 12))
+
+        far = c.execute(
+            text("select holder_team_id, original_team_id, pick_number, used "
+                 "from draft_picks where season = :s"),
+            {"s": _SEASON + 11},
+        ).all()
+        assert len(far) == 4  # 2 teams x 2 rounds
+        assert all(h == o and pn is None and used is False for h, o, pn, used in far)
+
+
+def test_future_pick_trade_survives_later_seeding():
+    with _engine.begin() as c:
+        a = _team(c, "Alpha", wins=5)
+        b = _team(c, "Bravo", wins=1)
+        offseason._extend_future_picks(c, _SEASON + 5)  # placeholder for a far year
+
+        # trade Alpha's round-1 pick in SEASON+5 to Bravo, simulating an approved trade
+        pick_id = c.execute(
+            text("select id from draft_picks where season=:s and round=1 and original_team_id=cast(:a as uuid)"),
+            {"s": _SEASON + 5, "a": a},
+        ).scalar_one()
+        c.execute(text("update draft_picks set holder_team_id = cast(:b as uuid) where id = :p"),
+                  {"b": b, "p": pick_id})
+
+    # later, real standings-based seeding runs for that season -- must NOT reset
+    # holder back to Alpha.
+    with _engine.begin() as c:
+        offseason._seed_draft_order(c, ["Alpha", "Bravo"], _SEASON + 5)
+
+    with _engine.connect() as c:
+        row = c.execute(
+            text("select holder_team_id, pick_number from draft_picks where id = :p"), {"p": pick_id}
+        ).mappings().first()
+        assert str(row["holder_team_id"]) == b        # trade preserved
+        assert row["pick_number"] is not None          # real order was assigned
+
+
+def test_seed_draft_order_idempotent():
+    with _engine.begin() as c:
+        _team(c, "Alpha")
+        _team(c, "Bravo")
+        n1 = offseason._seed_draft_order(c, ["Alpha", "Bravo"], _SEASON + 1)
+        n2 = offseason._seed_draft_order(c, ["Bravo", "Alpha"], _SEASON + 1)  # different order
+        assert n1 == n2 == 4
+
+    with _engine.connect() as c:
+        total = c.execute(text("select count(*) from draft_picks where season=:s"), {"s": _SEASON + 1}).scalar_one()
+        assert total == 4  # no duplicate rows
+        # second call's order won by updating pick_number in place
+        top = c.execute(
+            text("select t.slug from draft_picks d join teams t on t.id=d.holder_team_id "
+                 "where d.season=:s and d.round=1 order by d.pick_number limit 1"),
+            {"s": _SEASON + 1},
+        ).scalar_one()
+        assert top == "Alpha"  # reversed(["Bravo","Alpha"]) -> Alpha picks 1st in round 1
+
+
 def test_retirement_candidates_and_retire():
     with _engine.begin() as c:
         a = _team(c, "Alpha")

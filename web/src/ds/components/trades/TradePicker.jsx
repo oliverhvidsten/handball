@@ -6,25 +6,27 @@ import { Tag } from "../forms/Tag.jsx";
 
 const POS_TONE = { Forward: "green", Midfielder: "blue", Defense: "amber", Goalie: "purple" };
 
-function PickList({ players = [], selected = [], onToggle, empty }) {
-  if (players.length === 0) {
+function AssetList({ items = [], selected = [], onToggle, empty, renderLabel, renderTag }) {
+  if (items.length === 0) {
     return <div style={{ padding: "20px 12px", textAlign: "center", fontSize: "var(--text-sm)", color: "var(--muted)" }}>{empty}</div>;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
-      {players.map((p) => {
-        const on = selected.includes(p.id);
+      {items.map((item) => {
+        const on = selected.includes(item.id);
         return (
           <label
-            key={p.id}
+            key={item.id}
             style={{
               display: "flex", alignItems: "center", gap: 9, padding: "7px 4px", cursor: "pointer",
               borderBottom: "1px solid var(--line)",
             }}
           >
-            <Checkbox checked={on} onChange={() => onToggle(p.id)} />
-            <span style={{ flex: 1, fontSize: "var(--text-sm)", fontWeight: on ? 600 : 400, color: "var(--text-body)" }}>{p.name}</span>
-            <Tag tone={POS_TONE[p.position] || "neutral"} size="sm">{p.position}</Tag>
+            <Checkbox checked={on} onChange={() => onToggle(item.id)} />
+            <span style={{ flex: 1, fontSize: "var(--text-sm)", fontWeight: on ? 600 : 400, color: "var(--text-body)" }}>
+              {renderLabel(item)}
+            </span>
+            {renderTag && renderTag(item)}
           </label>
         );
       })}
@@ -32,9 +34,16 @@ function PickList({ players = [], selected = [], onToggle, empty }) {
   );
 }
 
+const subHead = {
+  fontFamily: "var(--font-body)", fontSize: "var(--text-2xs)", fontWeight: "var(--weight-bold)",
+  letterSpacing: "var(--tracking-wide)", textTransform: "uppercase", color: "var(--muted)",
+  margin: "12px 0 4px",
+};
+
 /**
  * NHA TradePicker — the propose-a-trade builder. Team selector + two
- * side-by-side checkbox player lists ("You send" / "You receive") + Propose.
+ * side-by-side checkbox lists ("You send" / "You receive"), each covering
+ * both players and draft picks + Propose.
  */
 export function TradePicker({
   myTeam = "Your team",
@@ -47,12 +56,18 @@ export function TradePicker({
   inn = [],
   onToggleOut,
   onToggleIn,
+  myPicks = [],
+  theirPicks = [],
+  picksOut = [],
+  picksIn = [],
+  onTogglePickOut,
+  onTogglePickIn,
   onPropose,
   busy = false,
   proposeLabel = "Propose trade",
   style = {},
 }) {
-  const canPropose = toTeam && (out.length > 0 || inn.length > 0) && !busy;
+  const canPropose = toTeam && (out.length > 0 || inn.length > 0 || picksOut.length > 0 || picksIn.length > 0) && !busy;
   const colHead = {
     display: "flex", alignItems: "center", justifyContent: "space-between",
     padding: "0 0 8px", marginBottom: 4, borderBottom: "2px solid var(--line-strong)",
@@ -61,6 +76,8 @@ export function TradePicker({
     fontFamily: "var(--font-body)", fontSize: "var(--text-xs)", fontWeight: "var(--weight-bold)",
     letterSpacing: "var(--tracking-wide)", textTransform: "uppercase", color: "var(--muted)",
   };
+  const pickLabel = (p) => `${p.originalTeam} Round ${p.round}`;
+  const pickTag = (p) => <Tag tone="neutral" size="sm">{p.season}</Tag>;
   return (
     <div
       style={{
@@ -84,16 +101,28 @@ export function TradePicker({
           <div>
             <div style={colHead}>
               <span style={colTitle}>You send · {myTeam}</span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--green-700)" }}>{out.length} selected</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--green-700)" }}>
+                {out.length + picksOut.length} selected
+              </span>
             </div>
-            <PickList players={myPlayers} selected={out} onToggle={onToggleOut} empty="No players." />
+            <AssetList items={myPlayers} selected={out} onToggle={onToggleOut} empty="No players."
+              renderLabel={(p) => p.name} renderTag={(p) => <Tag tone={POS_TONE[p.position] || "neutral"} size="sm">{p.position}</Tag>} />
+            <h5 style={subHead}>Draft picks</h5>
+            <AssetList items={myPicks} selected={picksOut} onToggle={onTogglePickOut} empty="No draft picks."
+              renderLabel={pickLabel} renderTag={pickTag} />
           </div>
           <div>
             <div style={colHead}>
               <span style={colTitle}>You receive</span>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--blue-text)" }}>{inn.length} selected</span>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--blue-text)" }}>
+                {inn.length + picksIn.length} selected
+              </span>
             </div>
-            <PickList players={theirPlayers} selected={inn} onToggle={onToggleIn} empty="Pick a team first." />
+            <AssetList items={theirPlayers} selected={inn} onToggle={onToggleIn} empty="Pick a team first."
+              renderLabel={(p) => p.name} renderTag={(p) => <Tag tone={POS_TONE[p.position] || "neutral"} size="sm">{p.position}</Tag>} />
+            <h5 style={subHead}>Draft picks</h5>
+            <AssetList items={theirPicks} selected={picksIn} onToggle={onTogglePickIn} empty="No draft picks."
+              renderLabel={pickLabel} renderTag={pickTag} />
           </div>
         </div>
       ) : (
