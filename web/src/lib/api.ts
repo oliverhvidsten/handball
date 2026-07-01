@@ -12,6 +12,13 @@ export class ApiError extends Error {
   }
 }
 
+// The API host (Render free tier) sleeps after ~15min idle; the first request
+// after a sleep can get a hard connection failure (browser reports it as
+// "Failed to fetch") while the container is still booting, rather than just
+// being slow. Retry network-level failures a few times with backoff to ride
+// out the boot instead of surfacing a confusing error to the user.
+const COLD_START_RETRY_DELAYS_MS = [2000, 4000, 8000];
+
 /**
  * Authenticated call to the FastAPI write layer. Attaches the current Supabase
  * access token as a Bearer header (the server verifies it via JWKS). Throws
@@ -22,14 +29,24 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
   const token = data.session?.access_token;
   if (!token) throw new ApiError(401, "not signed in");
 
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-  });
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    ...(init.headers ?? {}),
+  };
+
+  let res: Response;
+  let attempt = 0;
+  while (true) {
+    try {
+      res = await fetch(`${API_URL}${path}`, { ...init, headers });
+      break;
+    } catch (e) {
+      if (attempt >= COLD_START_RETRY_DELAYS_MS.length) throw e;
+      await new Promise((r) => setTimeout(r, COLD_START_RETRY_DELAYS_MS[attempt]));
+      attempt += 1;
+    }
+  }
 
   if (!res.ok) {
     let detail: unknown = await res.json().catch(() => null);

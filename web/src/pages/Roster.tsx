@@ -46,6 +46,45 @@ function buildArr(players: PP[]): Arrangement {
   return arr;
 }
 
+// Mirrors handball/game_simulator.py's init_stats/calculate_stats, minus the
+// per-game RNG draw -- this is a static "current roster strength" reading,
+// not a simulated single-game roll. Weights/minutes match MAIN_STAT (3),
+// SECONDARY_STAT (1), MIDDIE_STATS (2), STARTER_MINUTES (45), BENCH_MINUTES
+// (22.5) in handball/simulation_vars.py. Weighted by lineup slot, not a
+// player's rated `position` -- the simulator iterates
+// team_obj.starters["Forward"] etc., so an off-position player (e.g. a
+// Forward-rated player slotted at Midfielder) is weighted by the slot.
+// Takes the in-progress `arr` (not the last-saved `players` rows) so the
+// numbers track lineup edits live, before Save.
+const POSITION_WEIGHTS: Record<string, { off: number; def: number }> = {
+  Forward: { off: 3, def: 1 },
+  Midfielder: { off: 2, def: 2 },
+  Defense: { off: 1, def: 3 },
+};
+function computeTeamStats(arr: Arrangement, byId: Map<string, PP>): { offense: number; defense: number } {
+  let offense = 0;
+  let defense = 0;
+  const tally = (group: "starters" | "bench", minutes: number) => {
+    for (const pos of POSITIONS) {
+      for (const id of arr[group][pos]) {
+        const p = byId.get(id);
+        if (!p || p.is_injured) continue;
+        if (pos === "Goalie") {
+          defense += p.goalie_skill * 4 * (minutes / 60);
+          continue;
+        }
+        const w = POSITION_WEIGHTS[pos];
+        if (!w) continue;
+        offense += p.offense * w.off * (minutes / 60);
+        defense += p.defense * w.def * (minutes / 60);
+      }
+    }
+  };
+  tally("starters", 45);
+  tally("bench", 22.5);
+  return { offense, defense };
+}
+
 export default function Roster() {
   // The "/teams/:slug" route views any team (read-only unless owned); the
   // "/roster" nav entry has no param and follows the TeamSwitcher selection.
@@ -88,6 +127,7 @@ export default function Roster() {
   useEffect(() => { void load(); }, [load]);
 
   const byId = useMemo(() => new Map(players.map((p) => [p.legacy_id, p])), [players]);
+  const teamStats = useMemo(() => computeTeamStats(arr, byId), [arr, byId]);
   const dsPlayer = (id: string) => {
     const p = byId.get(id);
     return p && { id: p.legacy_id, name: p.name, position: p.position, offense: p.offense, defense: p.defense, goalie: p.goalie_skill, injured: p.is_injured };
@@ -213,6 +253,12 @@ export default function Roster() {
     <section>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 8 }}>
         <h2>{teamName}{editable ? "" : <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginLeft: 10 }}>read-only</span>}</h2>
+        {players.length > 0 && (
+          <div style={{ display: "flex", gap: 14, fontSize: "var(--text-sm)", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+            <span><span style={{ fontWeight: "var(--weight-bold)", color: "var(--text-soft)" }}>Off</span> {teamStats.offense.toFixed(1)}</span>
+            <span><span style={{ fontWeight: "var(--weight-bold)", color: "var(--text-soft)" }}>Def</span> {teamStats.defense.toFixed(1)}</span>
+          </div>
+        )}
       </div>
       {coaches.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16, fontSize: "var(--text-sm)", color: "var(--muted)" }}>
