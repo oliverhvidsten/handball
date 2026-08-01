@@ -58,16 +58,26 @@ def retirement_candidates(engine: Engine) -> list[dict]:
 
 def retire_players(engine: Engine, legacy_ids: list[str], season: int) -> int:
     """Flag the given players retired and remove them from rosters. The row is kept
-    (career stats + FKs survive); only roster membership/slots are cleared. Returns
-    how many players were newly retired."""
+    (career stats + FKs survive); only roster membership/slots are cleared. Bird rights
+    are dropped too -- a retiree is nobody's free agent to re-sign. Any live free-agency
+    auction on them is voided in the SAME transaction, releasing the bidders' promises:
+    retirement is curated during the offseason, which is exactly when the market is
+    open, so the two genuinely overlap. Returns how many players were newly retired."""
+    from handball.free_agency import void_player_auctions
+
     if not legacy_ids:
         return 0
     with engine.begin() as conn:
+        retiring = conn.execute(
+            text("select id from players where legacy_id = any(:ids) and retired = false"),
+            {"ids": list(legacy_ids)},
+        ).scalars().all()
+        void_player_auctions(conn, retiring, reason="retired")
         rows = conn.execute(
             text(
                 "update players set retired = true, retired_season = :s, "
-                "team_id = null, slot_group = null, slot_position = null, "
-                "slot_order = null, updated_at = now() "
+                "team_id = null, rights_team_id = null, slot_group = null, "
+                "slot_position = null, slot_order = null, updated_at = now() "
                 "where legacy_id = any(:ids) and retired = false returning legacy_id"
             ),
             {"s": season, "ids": list(legacy_ids)},
@@ -239,10 +249,16 @@ def _age_all_players(conn) -> int:
 def _process_free_agency(conn) -> int:
     """Players whose contracts have run out (years_remaining <= 0) leave their team
     and become free agents (team_id + slots cleared). Run AFTER aging, which ticks
-    years_remaining down. Returns players moved to the pool."""
+    years_remaining down. Returns players moved to the pool.
+
+    The team the contract expired off is remembered in rights_team_id: that team holds
+    the player's Bird rights and may re-sign them above the soft cap (see
+    handball/signing_service.py). SET reads the OLD row, so `rights_team_id = team_id`
+    captures the team being cleared in the same statement."""
     rows = conn.execute(
-        text("update players set team_id = null, slot_group = null, "
-             "slot_position = null, slot_order = null, updated_at = now() "
+        text("update players set rights_team_id = team_id, team_id = null, "
+             "slot_group = null, slot_position = null, slot_order = null, "
+             "updated_at = now() "
              "where retired = false and team_id is not null and years_remaining <= 0 "
              "returning legacy_id")
     ).all()

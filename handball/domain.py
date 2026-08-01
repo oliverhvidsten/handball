@@ -276,8 +276,24 @@ class Player:
             self.decline_rate = min(MAX_DECLINE_RATE, self.decline_rate * INJURY_DECLINE_MULTIPLIER)
 
     def update_contract(self, contract_term: int, contract_salary: int, rookie: bool) -> None:
+        """Put this player on a NEW contract (a draft pick signing today; a free-agent
+        signing or re-signing later). The term/value are checked against the league
+        contract limits here -- salary_cap.validate_contract -- so no write path can
+        create an illegal deal. `years_remaining` restarts at the full term: a new
+        contract is a fresh one, and the offseason expires deals off that counter
+        alone (offseason._process_free_agency).
+
+        What is NOT checked here: whether the signing TEAM has cap room. That is a
+        team-level question the caller owns (salary_cap.check_signing for a signing,
+        assert_trade_hard_cap for a trade), and rookie deals are exempt from it
+        outright -- an over-cap team then shows up as a season-start blocker
+        (season_readiness). Imported lazily to keep domain free of a hard dependency
+        on the cap-rules module."""
+        from handball.salary_cap import validate_contract
+        validate_contract(contract_term, contract_salary)
         self.contract_term = contract_term
         self.contract_value = contract_salary
+        self.years_remaining = contract_term
         if not rookie:
             self.rookie_contract = False
             self.restricted_free_agent = False
@@ -387,6 +403,14 @@ class Team:
     @property
     def total_salaries(self) -> int:
         return sum(p.contract_value for p in self.roster())
+
+    @property
+    def cap_situation(self):
+        """This team's standing against the salary cap (cap room, luxury-tax
+        thresholds, MLE, hard-cap headroom). Imported lazily to keep domain free
+        of a hard dependency on the cap-rules module."""
+        from handball.salary_cap import cap_situation
+        return cap_situation(self.total_salaries)
 
     def public_view(self) -> TeamPublicView:
         def proj(group: dict[str, list[Player]]) -> dict[str, list[PlayerPublicView]]:

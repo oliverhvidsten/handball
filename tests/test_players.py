@@ -10,6 +10,8 @@ Date: 8/3/2025 8:11PM PST
 import pytest
 from handball.domain import Player
 from handball.players import PlayerInfo, InjuryReport
+from handball.salary_cap import ContractError
+from handball.simulation_vars import MAX_CONTRACT_VALUE, MAX_CONTRACT_YEARS
 
 
 # ======================================================================
@@ -256,6 +258,33 @@ def test_update_contract_non_rookie(player_obj):
     assert player_obj.contract_value == 15
     assert player_obj.rookie_contract is False
     assert player_obj.restricted_free_agent is False
+
+
+def test_update_contract_restarts_years_remaining(player_obj):
+    # a new contract is a fresh one -- the offseason expires deals off this counter
+    player_obj.years_remaining = 0
+    player_obj.update_contract(4, 20, rookie=False)
+    assert player_obj.years_remaining == 4
+
+
+@pytest.mark.parametrize("term, value", [
+    (0, 10),                    # no such thing as a 0-year deal
+    (MAX_CONTRACT_YEARS + 1, 10),
+    (3, MAX_CONTRACT_VALUE + 1),
+    (3, -1),
+])
+def test_update_contract_enforces_league_limits(player_obj, term, value):
+    # the cap rules are enforced in ONE place (salary_cap.validate_contract); no
+    # write path can put a player on an illegal deal.
+    with pytest.raises(ContractError):
+        player_obj.update_contract(term, value, rookie=False)
+    assert (player_obj.contract_term, player_obj.contract_value) == (5, 10)  # unchanged
+
+
+def test_update_contract_allows_a_minimum_deal(player_obj):
+    player_obj.update_contract(1, 0, rookie=False)      # $0 minimum contract is legal
+    assert player_obj.contract_value == 0
+    assert player_obj.years_remaining == 1
 
 
 # ======================================================================

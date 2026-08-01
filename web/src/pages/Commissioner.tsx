@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { TradeRow, EmptyState, Alert, Button, Toast } from "../ds";
+import { useFreeAgencyState } from "../lib/freeAgency";
 
 interface TeamLite { id: string; name: string; }
 interface TradeT { id: string; from_team_id: string; to_team_id: string; status: string; internal: boolean; }
@@ -17,10 +18,19 @@ interface SeasonState {
   run_error: string | null;
   run_stale: boolean;
   regular_season_complete: boolean;
+  // Season-start readiness (handball/season_readiness.py). The check list is a
+  // registry that can grow, so render whatever the API sends rather than naming
+  // individual checks here.
+  season_ready: boolean;
+  season_blockers: Blocker[];
+  readiness_checks: { name: string; description: string }[];
+  readiness_gates_next_period: boolean;
 }
+interface Blocker { check: string; subject: string; message: string; }
 interface Candidate { legacy_id: string; name: string; age: number; position: string; team_name: string | null; }
 
 export default function Commissioner() {
+  const { fa, refresh: refreshFa } = useFreeAgencyState();
   const [teams, setTeams] = useState<TeamLite[]>([]);
   const [queue, setQueue] = useState<TradeT[]>([]);
   const [season, setSeason] = useState<SeasonState | null>(null);
@@ -78,7 +88,7 @@ export default function Commissioner() {
     try {
       await apiFetch(path, { method: "POST" });
       setToast(ok);
-      await load();
+      await Promise.all([load(), refreshFa()]);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
     } finally {
@@ -112,8 +122,12 @@ export default function Commissioner() {
   const queueClear = queue.length === 0;
   const scheduled = season?.schedule_generated ?? false;
   const seasonComplete = season != null && season.next_period > season.total_periods;
+  // Readiness blocks starting a season (period 1) only; mid-season it's informational.
+  const blockers = season?.season_blockers ?? [];
+  const readinessBlocked = season?.readiness_gates_next_period ?? false;
   const canRun =
-    scheduled && queueClear && !seasonComplete && busy == null && !activelyRunning && !needsReset;
+    scheduled && queueClear && !readinessBlocked && !seasonComplete &&
+    busy == null && !activelyRunning && !needsReset;
   const canAdvance = seasonComplete && queueClear && busy == null && !activelyRunning && !needsReset;
 
   return (
@@ -171,6 +185,13 @@ export default function Commissioner() {
         <Alert tone="info" style={{ marginBottom: 12 }}>
           The trade approval queue must be cleared before a period can run.
         </Alert>
+      ) : readinessBlocked ? (
+        <Alert
+          tone="error"
+          title={`Season ${season?.season} can’t start until these are resolved`}
+          items={blockers.map((b) => b.message)}
+          style={{ marginBottom: 12 }}
+        />
       ) : seasonComplete ? (
         <Alert tone="info" style={{ marginBottom: 12 }}>
           Every regular-season period has been played — see the Offseason section below to advance.
@@ -214,6 +235,18 @@ export default function Commissioner() {
             awards, seeds the draft order, ages every player, and opens the new season. This can't be undone.
           </p>
 
+          {/* Advancing is allowed while these are outstanding -- they only block the
+              first period of the NEW season -- but surfacing them now is the point:
+              the offseason is when teams have room to fix them. */}
+          {blockers.length > 0 && (
+            <Alert
+              tone="warning"
+              title={`Outstanding before season ${season!.season + 1} can start`}
+              items={blockers.map((b) => b.message)}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+
           <h4 style={{ margin: "16px 0 8px" }}>Potential retirees ({candidates.length})</h4>
           {candidates.length === 0 ? (
             <EmptyState compact title="No candidates" message="No active players are over the retirement age." />
@@ -254,6 +287,69 @@ export default function Commissioner() {
             </Button>
           </div>
         </>
+      )}
+
+      {/* -- free agency ---------------------------------------------------
+          The phase controls only; the per-board actions (force a forfeit, award a
+          deadlock) live on the Free Agents page, where the board is in front of you.
+          One mutually-exclusive chain, like the run controls above. */}
+      <h3 style={{ margin: "28px 0 10px" }}>Free agency</h3>
+      {fa?.period == null ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            No free-agency period is open. Open one after the rollover — teams offer contracts in a
+            sealed round, then contested players go to auction. Season {season?.season} can't start
+            while it's open.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/periods", "Free agency opened.")}>
+            {busy === "/free-agency/periods" ? "Opening…" : "Open free agency"}
+          </Button>
+        </>
+      ) : fa.round?.status === "offers" ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            Round {fa.round.round_number} is taking offers. They stay sealed until you close the
+            round — then sole offers sign, restricted players open match windows, and anyone with
+            two or more offers goes to bidding.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/rounds/close", `Round ${fa.round!.round_number} closed.`)}>
+            {busy === "/free-agency/rounds/close" ? "Closing…" : `Close round ${fa.round.round_number}`}
+          </Button>
+        </>
+      ) : (fa.auctions ?? []).length > 0 ? (
+        <Alert tone="warning" title={`${(fa.auctions ?? []).length} board(s) still live`}
+          items={(fa.auctions ?? []).map((a) =>
+            a.status === "awaiting_award"
+              ? `${a.player_name} — deadlocked, needs your award`
+              : a.status === "matching"
+                ? `${a.player_name} — awaiting a match from ${a.rights_team ?? "the rights holder"}`
+                : `${a.player_name} — on the clock: ${a.turn_team_name ?? "?"}`)}>
+          Award deadlocks and force forfeits on the Free Agents page.
+        </Alert>
+      ) : fa.round && !fa.round.offers_count ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            Round {fa.round.round_number} drew no offers — free agency is done. Everyone still
+            unsigned goes back to the pool at the league minimum.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/close", "Free agency closed.")}>
+            {busy === "/free-agency/close" ? "Closing…" : "Close free agency"}
+          </Button>
+        </>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/rounds", "Next round opened.")}>
+            Open round {(fa.round?.round_number ?? 0) + 1}
+          </Button>
+          <Button disabled={busy != null}
+            onClick={() => act("/free-agency/close", "Free agency closed.")}>
+            Close free agency
+          </Button>
+        </div>
       )}
 
       {toast && (

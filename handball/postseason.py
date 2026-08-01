@@ -98,8 +98,12 @@ class DraftService:
                 position = position or assign_random_position()
                 pid = self._unique_player_id(holder, name, used_ids)
                 player = create_draft_player(name, position, id=pid)
+                # A rookie deal goes on the books no matter what the holder's payroll
+                # is (a team must be able to sign its picks), so there is no cap check
+                # here -- update_contract validates the CONTRACT and starts the term
+                # clock. A holder pushed over the hard cap becomes a season-start
+                # blocker instead; see handball/season_readiness.py.
                 player.update_contract(self.rookie_years, self.rookie_salary, rookie=True)
-                player.years_remaining = self.rookie_years
 
                 picks.append(DraftPickResult(
                     round_num=round_num, pick_num=pick_num, overall=overall,

@@ -8,10 +8,18 @@ NHA write API. Endpoints:
     POST /trades/{id}/reject            receiving manager rejects
     POST /trades/{id}/cancel            proposing manager cancels
     POST /trades/{id}/approve           commissioner approves + commits
+    GET  /teams/{slug}/cap              cap standing + roster room + offer ceilings
+    POST /signings                      manager signs a free agent (pool, 1yr/$0)
+    GET  /free-agency/state             the offseason market, from this manager's side
+    POST /free-agency/periods           commissioner opens the market
+    POST /free-agency/offers            manager offers a free agent a contract
+    POST /free-agency/rounds/close      commissioner closes the sealed offer round
+    POST /free-agency/auctions/{id}/... match / decline / bid / force-forfeit / award
 
 Domain rules are reused, not reimplemented: arrangement edits go through
-Team.apply_arrangement (which runs domain.validate) and trades through
-trade_service. Authorization is by manager↔team ownership + the commissioner role.
+Team.apply_arrangement (which runs domain.validate), trades through trade_service,
+and signings through signing_service (which enforces salary_cap). Authorization is by
+manager↔team ownership + the commissioner role.
 """
 from __future__ import annotations
 
@@ -24,8 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from handball import free_agency as fa
 from handball import offseason
 from handball import schedule_repository as sched_repo
+from handball import season_readiness
+from handball import signing_service as sign
 from handball import trade_service as ts
 from handball.db import get_engine
 from handball.domain import ArrangementError
@@ -76,6 +87,45 @@ class RetirementBody(BaseModel):
     player_ids: list[str] = Field(default_factory=list)
 
 
+class OfferBody(BaseModel):
+    """A sealed contract offer in a free-agency round. The bounds here only keep
+    nonsense out of the query; the league's contract and cap rules are enforced in
+    handball/free_agency_rules.py."""
+    team: str
+    player_id: str
+    term: int = Field(ge=1)
+    value: int = Field(ge=0)
+
+
+class WithdrawBody(BaseModel):
+    team: str
+    player_id: str
+
+
+class BidBody(BaseModel):
+    """One turn of sequential bidding. `term`/`value` are required for a raise and
+    ignored otherwise -- a match copies the leader's contract by definition."""
+    team: str
+    action: str = Field(pattern="^(match|raise|forfeit)$")
+    term: int | None = Field(default=None, ge=1)
+    value: int | None = Field(default=None, ge=0)
+
+
+class TeamActionBody(BaseModel):
+    """A commissioner intervention aimed at one team (force-forfeit, award)."""
+    team: str
+    reason: str | None = None
+
+
+class SigningBody(BaseModel):
+    """A free-agent signing: who, and onto which team. No contract fields -- every
+    free-agent deal is the same fixed league-minimum contract
+    (signing_service.FREE_AGENT_CONTRACT_YEARS/SALARY); term and value are negotiated
+    only when re-signing your own expiring players."""
+    team: str
+    player_id: str
+
+
 # -- helpers ---------------------------------------------------------------
 def _team_uuid(slug: str) -> str:
     with engine.connect() as conn:
@@ -109,6 +159,30 @@ def _require_owns(mgr: Manager, slug: str) -> None:
 def _require_commissioner(mgr: Manager) -> None:
     if not mgr.is_commissioner:
         raise HTTPException(status_code=403, detail="commissioner only")
+
+
+def _require_owns_strict(mgr: Manager, slug: str) -> None:
+    """Ownership WITHOUT the commissioner bypass _require_owns grants. In a sealed-bid
+    auction the commissioner is also a manager with teams of their own; letting them
+    submit offers or bid as anybody would be a hole, not a convenience. Their powers
+    over the market are the explicit ones -- close a round, force a forfeit, award a
+    deadlock -- each of which is logged as a commissioner action."""
+    if not mgr.owns(_team_uuid(slug)):
+        raise HTTPException(status_code=403, detail="not your team")
+
+
+def _owned_teams(mgr: Manager) -> list[dict]:
+    """The manager's teams as {id, slug, name}. A manager may own several, so every
+    "is it my turn?" question is asked across all of them."""
+    if not mgr.owned_team_ids:
+        return []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("select id::text as id, slug, name from teams "
+                 "where id = any(cast(:ids as uuid[])) order by name"),
+            {"ids": [str(t) for t in mgr.owned_team_ids]},
+        ).mappings().all()
+    return [dict(r) for r in rows]
 
 
 # Season the run controls manage. "Advance season" (a NEW season year) is out of
@@ -221,6 +295,184 @@ def _run_transition(fn, trade_id: str):
     return {"trade_id": trade_id, "status": ts.get_trade_status(engine, trade_id)}
 
 
+# -- free-agent signing ----------------------------------------------------
+@app.get("/teams/{slug}/cap")
+def team_cap(slug: str, mgr: Manager = Depends(get_current_manager)):
+    """A team's salary-cap standing: payroll, cap room, luxury-tax thresholds, MLE,
+    hard-cap headroom, roster room, and the two offer ceilings (own free agent vs
+    outside). Readable by any authenticated manager -- payroll is public information
+    (it's already in Team.public_view) and the free-agent page needs it for every team
+    the user can act as."""
+    try:
+        return sign.team_cap_report(engine, slug)
+    except sign.SigningError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/signings")
+def post_signing(body: SigningBody, mgr: Manager = Depends(get_current_manager)):
+    """Sign a free agent to the fixed league-minimum deal (1 year, $0M). No
+    commissioner approval: unlike a trade there is no counterparty to collude with,
+    the terms aren't negotiable, and eligibility/roster room are checked objectively
+    in signing_service."""
+    _require_owns(mgr, body.team)
+    _require_no_run_in_flight()
+    try:
+        return sign.sign_free_agent(engine, body.team, body.player_id)
+    except sign.SigningError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _require_no_run_in_flight() -> None:
+    """Refuse roster additions while a period is simulating. The simulation loads each
+    team once and writes results back per game, so a player arriving mid-run would land
+    in a season whose games are half-played. A dead run (stale heartbeat) doesn't
+    count -- that has to be reset via /periods/reset anyway."""
+    state = sched_repo.get_season_state(engine, _active_season())
+    if state and state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(
+            status_code=409, detail="a period is currently simulating; try again once it finishes"
+        )
+
+
+# -- free agency: the offseason market -------------------------------------
+# Commissioner controls the phases; managers act inside them. Every rule violation
+# comes back as 409 with the service's own sentence, which is written to be shown to
+# the manager who tried it.
+@app.post("/free-agency/periods", status_code=201)
+def open_free_agency(mgr: Manager = Depends(get_current_manager)):
+    """Open the offseason market for the active season, with its first offer round."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if state and state["periods_run"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="the season is already under way; free agency belongs to the offseason")
+    return _fa_action(fa.open_period, engine, season, actor=mgr.user_id)
+
+
+@app.post("/free-agency/rounds/close")
+def close_offer_round(mgr: Manager = Depends(get_current_manager)):
+    """Shut the sealed offer window and resolve every board at once."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.close_offer_round, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/rounds", status_code=201)
+def open_next_round(mgr: Manager = Depends(get_current_manager)):
+    """Open another offer round on whoever is still unsigned."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.open_next_round, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/close")
+def close_free_agency(mgr: Manager = Depends(get_current_manager)):
+    """End the market. Everyone unsigned returns to the ordinary 1yr/$0 pool."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.close_period, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/offers", status_code=201)
+def submit_offer(body: OfferBody, mgr: Manager = Depends(get_current_manager)):
+    """Offer a free agent a contract, replacing any offer this team already has on
+    them. Sealed until the commissioner closes the round."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.submit_offer, engine, body.team, body.player_id,
+                      body.term, body.value, actor=mgr.user_id)
+
+
+@app.post("/free-agency/offers/withdraw")
+def withdraw_offer(body: WithdrawBody, mgr: Manager = Depends(get_current_manager)):
+    """Pull one of your live offers while the round is still open."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.withdraw_offer, engine, body.team, body.player_id,
+                      actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/match")
+def rfa_match(auction_id: int, body: TeamActionBody,
+              mgr: Manager = Depends(get_current_manager)):
+    """Restricted free agency: match the top offer exactly and keep your player."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.match_offer, engine, auction_id, body.team, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/decline")
+def rfa_decline(auction_id: int, body: TeamActionBody,
+                mgr: Manager = Depends(get_current_manager)):
+    """Restricted free agency: pass, and let the player go to the open market."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.decline_match, engine, auction_id, body.team, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/bid")
+def place_bid(auction_id: int, body: BidBody, mgr: Manager = Depends(get_current_manager)):
+    """One turn of sequential bidding: match, raise or forfeit."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.place_bid, engine, auction_id, body.team, body.action,
+                      term=body.term, value=body.value, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/force-forfeit")
+def force_forfeit(auction_id: int, body: TeamActionBody,
+                  mgr: Manager = Depends(get_current_manager)):
+    """Commissioner: drop a team that is stalling a board."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.force_forfeit, engine, auction_id, body.team,
+                      actor=mgr.user_id, reason=body.reason or "commissioner")
+
+
+@app.post("/free-agency/auctions/{auction_id}/award")
+def award_auction(auction_id: int, body: TeamActionBody,
+                  mgr: Manager = Depends(get_current_manager)):
+    """Commissioner: break a no-raise deadlock by awarding the player."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.award_auction, engine, auction_id, body.team,
+                      actor=mgr.user_id, reason=body.reason)
+
+
+def _fa_action(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except (fa.FreeAgencyError, ArrangementError) as e:
+        detail = {"problems": e.problems} if isinstance(e, ArrangementError) else str(e)
+        raise HTTPException(status_code=409, detail=detail)
+
+
+@app.get("/free-agency/state")
+def free_agency_state(mgr: Manager = Depends(get_current_manager)):
+    """The one document the free-agency page polls: the phase, every live board, and --
+    for each team this manager owns -- their cap room, their live offers, and the
+    boards waiting on them. `period` is null when no market is open, which is the
+    signal to render the ordinary pool page.
+
+    Sealed offers stay sealed: a manager gets their OWN offers here, and the boards
+    only exist once the round that produced them has closed."""
+    state = fa.free_agency_state(engine)
+    teams = []
+    waiting = 0
+    for team in _owned_teams(mgr):
+        actions = [
+            {"auction_id": a["id"], "player_id": a["player_id"],
+             "player_name": a["player_name"],
+             "kind": "rfa_match" if a["status"] == "matching" else "bid",
+             "waiting_since": a["waiting_since"]}
+            for a in state.get("auctions", [])
+            if (a["status"] == "bidding" and a["turn_team_id"] == team["id"])
+            or (a["status"] == "matching" and a["rights_team_id"] == team["id"])
+        ]
+        waiting += len(actions)
+        teams.append({
+            **team,
+            "cap": sign.team_cap_report(engine, team["slug"]),
+            "offers": fa.team_offers(engine, team["slug"]) if state["period"] else [],
+            "action_required": actions,
+        })
+    return {**state, "teams": teams, "your_turn_count": waiting,
+            "is_commissioner": mgr.is_commissioner}
+
+
 # -- season simulation -----------------------------------------------------
 @app.get("/season/state")
 def season_state(mgr: Manager = Depends(get_current_manager)):
@@ -243,6 +495,22 @@ def season_state(mgr: Manager = Depends(get_current_manager)):
         "run_error": state["run_error"] if state else None,
         "run_stale": _run_stale(state),
         "regular_season_complete": periods_run >= PERIODS,
+        # Season-start readiness (season_readiness.py). Only gates the FIRST period
+        # -- once the season is under way these are no longer blockers -- but it is
+        # always reported so the page can show what's outstanding during the
+        # offseason. The registry can grow; the page renders whatever comes back.
+        **_readiness_fields(season, periods_run),
+    }
+
+
+def _readiness_fields(season: int, periods_run: int) -> dict:
+    report = season_readiness.readiness_report(engine, season)
+    return {
+        "season_ready": report["ready"],
+        "season_blockers": report["blockers"],
+        "readiness_checks": report["checks"],
+        # what actually gates the button: readiness only binds before period 1.
+        "readiness_gates_next_period": periods_run == 0 and not report["ready"],
     }
 
 
@@ -359,6 +627,14 @@ def run_period(
             status_code=409,
             detail="clear the trade approval queue before running a period",
         )
+    # Starting the season (period 1) has preconditions the rest of the season does
+    # not -- e.g. no team may open above the hard cap after signing its draft picks.
+    # The whole list lives in season_readiness; every blocker is reported at once.
+    if next_period == 1:
+        try:
+            season_readiness.assert_season_can_start(engine, season)
+        except season_readiness.SeasonNotReady as e:
+            raise HTTPException(status_code=409, detail={"problems": e.problems})
 
     # Flip to 'running' synchronously (so a double-click is rejected above), then
     # hand the heavy work to a background task that runs after the response.

@@ -9,6 +9,7 @@ interface TradeT {
   id: string; from_team_id: string; to_team_id: string; status: string; internal: boolean; created_at: string;
 }
 interface PlayerOpt { id: string; name: string; position: string; }
+interface PickOpt { id: string; season: number; round: number; originalTeam: string; }
 
 export default function Trades() {
   const { teams, activeTeam, isCommissioner, session } = useAuth();
@@ -23,6 +24,10 @@ export default function Trades() {
   const [theirs, setTheirs] = useState<PlayerOpt[]>([]);
   const [out, setOut] = useState<string[]>([]);
   const [inn, setInn] = useState<string[]>([]);
+  const [myPicks, setMyPicks] = useState<PickOpt[]>([]);
+  const [theirPicks, setTheirPicks] = useState<PickOpt[]>([]);
+  const [picksOut, setPicksOut] = useState<string[]>([]);
+  const [picksIn, setPicksIn] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const ownedIds = new Set(teams.map((t) => t.id));
@@ -53,6 +58,27 @@ export default function Trades() {
     void loadPlayers(t?.id, setTheirs);
   }, [toSlug, allTeams, loadPlayers]);
 
+  // load draft-pick options for the propose form -- undrafted (used=false) rows a
+  // team currently holds, own or acquired (see handball/offseason.py's rolling
+  // 10-year future-pick window).
+  const loadPicks = useCallback(async (teamId: string | undefined, set: (p: PickOpt[]) => void) => {
+    if (!teamId) { set([]); return; }
+    const { data } = await supabase
+      .from("draft_picks")
+      .select("id, season, round, original:original_team_id(name)")
+      .eq("holder_team_id", teamId)
+      .eq("used", false)
+      .order("season", { ascending: true })
+      .order("round", { ascending: true });
+    set(((data as any[]) ?? []).map((p) => ({ id: p.id, season: p.season, round: p.round, originalTeam: p.original?.name ?? "?" })));
+  }, []);
+
+  useEffect(() => { void loadPicks(activeTeam?.id, setMyPicks); }, [activeTeam, loadPicks]);
+  useEffect(() => {
+    const t = allTeams.find((x) => x.slug === toSlug);
+    void loadPicks(t?.id, setTheirPicks);
+  }, [toSlug, allTeams, loadPicks]);
+
   async function act(path: string, ok: string) {
     setErr(null);
     try {
@@ -71,10 +97,14 @@ export default function Trades() {
     try {
       const res = await apiFetch<{ internal: boolean }>("/trades", {
         method: "POST",
-        body: JSON.stringify({ from_team: activeTeam.slug, to_team: toSlug, players_out: out, players_in: inn }),
+        body: JSON.stringify({
+          from_team: activeTeam.slug, to_team: toSlug,
+          players_out: out, players_in: inn,
+          picks_out: picksOut, picks_in: picksIn,
+        }),
       });
       setToast(res.internal ? "Internal trade created (awaiting commissioner)." : "Trade proposed.");
-      setToSlug(""); setOut([]); setInn([]);
+      setToSlug(""); setOut([]); setInn([]); setPicksOut([]); setPicksIn([]);
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "propose failed");
@@ -121,6 +151,12 @@ export default function Trades() {
           inn={inn}
           onToggleOut={(id: string) => setOut((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
           onToggleIn={(id: string) => setInn((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
+          myPicks={myPicks}
+          theirPicks={theirPicks}
+          picksOut={picksOut}
+          picksIn={picksIn}
+          onTogglePickOut={(id: string) => setPicksOut((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
+          onTogglePickIn={(id: string) => setPicksIn((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
           onPropose={propose}
           busy={busy}
           style={{ marginBottom: 24 }}

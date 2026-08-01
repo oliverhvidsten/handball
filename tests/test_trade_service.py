@@ -122,6 +122,78 @@ def test_infeasible_trade_rolls_back(two_teams):
     assert len(repo.load("Boston").roster()) == 19
 
 
+def _set_contract(legacy_id: str, value: int) -> None:
+    with _engine.begin() as c:
+        c.execute(text("update players set contract_value = :v where legacy_id = :lid"),
+                  {"v": value, "lid": legacy_id})
+
+
+def test_trade_over_hard_cap_rolls_back(two_teams):
+    repo = two_teams
+    # Boston sits at $240M; taking on denver-f5's $20M for its own $0M reserve
+    # would push it to $260M -- past the $250M hard cap -> reject + roll back.
+    _set_contract("boston-d1", 240)
+    _set_contract("denver-f5", 20)
+    tid = propose_trade(_engine, "Boston", "Denver",
+                        players_out=["boston-r1"], players_in=["denver-f5"])
+    accept_trade(_engine, tid)
+
+    with pytest.raises(TradeError, match="hard cap"):
+        approve_trade(_engine, tid)
+
+    assert get_trade_status(_engine, tid) == "accepted"      # rolled back
+    assert _team_of(repo, "denver-f5") == "Denver"
+    assert _team_of(repo, "boston-r1") == "Boston"
+
+
+def test_trade_up_to_hard_cap_commits(two_teams):
+    repo = two_teams
+    # Boston at $230M takes on a $20M player for a $0M reserve -> exactly $250M,
+    # which is allowed (the cap is a ceiling, not a strict inequality).
+    _set_contract("boston-d1", 230)
+    _set_contract("denver-f5", 20)
+    tid = propose_trade(_engine, "Boston", "Denver",
+                        players_out=["boston-r1"], players_in=["denver-f5"])
+    accept_trade(_engine, tid)
+    approve_trade(_engine, tid)
+
+    assert get_trade_status(_engine, tid) == "committed"
+    assert _team_of(repo, "denver-f5") == "Boston"
+    assert repo.load("Boston").total_salaries == 250
+
+
+def test_over_cap_team_may_trade_its_way_back(two_teams):
+    repo = two_teams
+    # Boston is at $270M -- legal only because rookie draft deals are cap-exempt, and
+    # a season-start blocker until it's fixed (handball/season_readiness.py). Shedding
+    # the $30M contract for a $0M reserve is exactly the fix, so it must be allowed
+    # even though Boston is still over the cap afterwards ($240M... under, here).
+    _set_contract("boston-d1", 240)
+    _set_contract("boston-r1", 30)
+    tid = propose_trade(_engine, "Boston", "Denver",
+                        players_out=["boston-r1"], players_in=["denver-f5"])
+    accept_trade(_engine, tid)
+    approve_trade(_engine, tid)
+
+    assert get_trade_status(_engine, tid) == "committed"
+    assert repo.load("Boston").total_salaries == 240
+
+
+def test_over_cap_team_may_not_trade_sideways(two_teams):
+    # Over the cap and NOT reducing payroll -> still rejected.
+    repo = two_teams
+    _set_contract("boston-d1", 260)              # $260M: over the $250M hard cap
+    tid = propose_trade(_engine, "Boston", "Denver",
+                        players_out=["boston-r1"], players_in=["denver-f5"])   # $0 <-> $0
+    accept_trade(_engine, tid)
+
+    with pytest.raises(TradeError, match="already over"):
+        approve_trade(_engine, tid)
+
+    assert get_trade_status(_engine, tid) == "accepted"      # rolled back
+    assert _team_of(repo, "denver-f5") == "Denver"
+
+
 def test_lifecycle_guards(two_teams):
     # can't approve a trade that hasn't been accepted
     tid = propose_trade(_engine, "Boston", "Denver", players_out=["boston-r1"], players_in=["denver-f5"])

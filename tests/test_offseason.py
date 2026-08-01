@@ -114,6 +114,10 @@ def test_advance_season_full_rollover():
         # free agency: expired contract left its team; the multi-year deal stayed
         assert c.execute(text("select team_id from players where legacy_id='b-fa'")).scalar_one() is None
         assert c.execute(text("select team_id from players where legacy_id='b-keep'")).scalar_one() is not None
+        # ...and Bravo keeps Bird rights on the expiring player, so it can re-sign them
+        # over the soft cap (handball/signing_service.py).
+        rights = c.execute(text("select rights_team_id from players where legacy_id='b-fa'")).scalar_one()
+        assert str(rights) == b
 
         # records zeroed; new season opened
         assert c.execute(text("select coalesce(sum(wins+losses+ties),0) from teams")).scalar_one() == 0
@@ -201,8 +205,10 @@ def test_retirement_candidates_and_retire():
     n = offseason.retire_players(_engine, ["old-1"], _SEASON)
     assert n == 1
     with _engine.connect() as c:
-        row = c.execute(text("select retired, retired_season, team_id from players where legacy_id='old-1'")).first()
+        row = c.execute(text("select retired, retired_season, team_id, rights_team_id "
+                             "from players where legacy_id='old-1'")).first()
         assert row[0] is True and row[1] == _SEASON and row[2] is None   # flagged + off roster
+        assert row[3] is None                     # and nobody's free agent to re-sign
         # row kept for history
         assert c.execute(text("select count(*) from players where legacy_id='old-1'")).scalar_one() == 1
     # no longer a candidate

@@ -1,0 +1,31 @@
+# Manager -> team ownership mapping.
+#
+# One line per manager:
+#     email | Display Name | Team, Team, ... | role
+#
+# - role is optional, defaults to 'manager'. Use 'commissioner' for league admins.
+#   The file is authoritative: anyone NOT marked commissioner is set to manager.
+# - email must match an auth.users row (the account you created in Supabase).
+# - Display Name is what shows in the UI (managers.display_name).
+# - Teams are team slugs (left column of the list below), comma-separated.
+#   A manager may own 0, 1, or many teams. The same team must not be listed twice.
+#
+# Blank lines and lines starting with # are ignored.
+#
+# Available team slugs:
+#   Atlanta, Boston, Charlotte, Chicago, Cincinnati, Cleveland, Dallas, Denver,
+#   Detroit, Houston, Indianapolis, Kansas City, Las Vegas, Los Angeles,
+#   Louisville, Miami, Milwaukee, Minneapolis, Nashville, New Orleans, New York,
+#   Oklahoma City, Philadelphia, Phoenix, San Diego, San Francisco, Seattle,
+#   St. Louis, Tampa Bay, Toronto, Vancouver, Washington
+#
+# --- fill in below (commissioner is optional; seed_owner.py already covers you) ---
+
+pflyons29@gmail.com        | Pat Lyons        | Boston, Cleveland, Minneapolis, San Diego | commissioner
+mbadia19@gmail.com         | Miguel Badia     | Washington, Nashville, New Orleans, Phoenix
+brad.wohlleber@gmail.com   | Brad Wohlleber   | Charlotte, Indianapolis, Dallas, Los Angeles
+paulvfantozzi@gmail.com    | Paul Fantozzi    | Miami, Louisville, Houston, Las Vegas
+mramr149@gmail.com         | Andrew Mister    | Tampa Bay, Toronto, Oklahoma City, Seattle
+frank.simutis.tpr@gmail.com| Frank Simutis    | Philadelphia, Chicago, Kansas City, Vancouver
+chasehh@gmail.com          | Chase Harrington | Atlanta, Cincinnati, Milwaukee, Denver
+oliverhvidsten@gmail.com   | Oliver Hvidsten  | New York, Detroit, St. Louis, San Francisco | commissioner

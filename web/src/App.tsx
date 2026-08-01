@@ -13,10 +13,11 @@ import Standings from "./pages/Standings";
 import Leaderboard from "./pages/Leaderboard";
 import Schedule from "./pages/Schedule";
 import Trades from "./pages/Trades";
+import FreeAgents from "./pages/FreeAgents";
 import Draft from "./pages/Draft";
 import Commissioner from "./pages/Commissioner";
 import Account from "./pages/Account";
-import { usePendingTradeCount } from "./hooks";
+import { usePendingTradeCount, useYourTurnCount } from "./hooks";
 
 // `scope` partitions the nav: "team" pages re-render on the TeamSwitcher's
 // activeTeam selection (grouped with the switcher in the TopNav); "league"
@@ -25,6 +26,7 @@ const NAV = [
   { label: "Dashboard", to: "/dashboard", scope: "team" },
   { label: "Roster", to: "/roster", scope: "team" },
   { label: "Trades", to: "/trades", scope: "team" },
+  { label: "Free Agents", to: "/free-agents", scope: "team" },
   { label: "Teams", to: "/teams", scope: "league" },
   { label: "Players", to: "/players", scope: "league" },
   { label: "Coaches", to: "/coaches", scope: "league" },
@@ -39,12 +41,15 @@ export default function App() {
   const nav = useNavigate();
   const loc = useLocation();
   const pending = usePendingTradeCount();
+  const yourTurn = useYourTurnCount();
 
   if (loading) return <div className="center">Loading…</div>;
   if (!session) return <Login />;
 
+  // The free-agency link carries its own count: bidding turns arrive while you're on
+  // another page, and folding them into the trade bell would send you to /trades.
   const links = NAV.map((n) => ({
-    label: n.label,
+    label: n.to === "/free-agents" && yourTurn > 0 ? `${n.label} (${yourTurn})` : n.label,
     href: "#" + n.to,
     scope: n.scope,
     active: loc.pathname.startsWith(n.to),
@@ -99,6 +104,7 @@ export default function App() {
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/schedule" element={<Schedule />} />
           <Route path="/trades" element={<Trades />} />
+          <Route path="/free-agents" element={<FreeAgents />} />
           <Route path="/draft" element={<Draft />} />
           {/* Mounted unconditionally: role resolves async after a cold load, so a
               conditional mount + the catch-all redirect would bounce a deep link

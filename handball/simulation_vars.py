@@ -78,3 +78,21 @@ RETIREMENT_CANDIDATE_AGE = 35   # players older than this are offered to the com
                                 # as retirement candidates (the commissioner decides).
 DRAFT_ROUNDS = 2                # rounds of draft-pick order seeded from final standings
 
+
+# Salary cap & contracts. All dollar figures are in millions/year (matching
+# Player.contract_value). See handball/salary_cap.py for how these compose into
+# a team's cap situation and what a given team may sign.
+MAX_CONTRACT_YEARS = 5               # longest contract term allowed
+MAX_CONTRACT_VALUE = 45              # highest annual salary allowed ($M/yr)
+MIN_CONTRACT_VALUE = 0               # a "minimum" contract is $0M/yr, so it never
+                                     # counts against the cap (total_salaries sums value)
+
+SALARY_CAP = 150                     # soft cap: a team may exceed it only to re-sign
+                                     # its own players (Bird rights) or via the MLE
+FIRST_LUXURY_TAX_THRESHOLD = 175     # payroll below this -> FIRST_MLE available
+SECOND_LUXURY_TAX_THRESHOLD = 200    # payroll below this -> SECOND_MLE available
+HARD_CAP = 250                       # payroll may NEVER exceed this, under any circumstance
+
+FIRST_MLE = 10                       # mid-level exception for teams below the first threshold
+SECOND_MLE = 5                       # mid-level exception for teams below the second threshold
+
