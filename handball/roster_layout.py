@@ -95,7 +95,7 @@ def rebuild_layout(conn, team_uuid, rules: RosterRules = DEFAULT_RULES) -> None:
     transaction rolls back."""
     team = canonical_team(team_players(conn, team_uuid), rules)
     validate(team.arrangement(), team, rules)      # safety net; rolls back on failure
-    persist_layout(conn, team)
+    persist_layout(conn, team, team_uuid)
 
 
 def try_rebuild_layout(conn, team_uuid, rules: RosterRules = DEFAULT_RULES) -> bool:
@@ -109,8 +109,21 @@ def try_rebuild_layout(conn, team_uuid, rules: RosterRules = DEFAULT_RULES) -> b
     return True
 
 
-def persist_layout(conn, team: Team) -> None:
-    """Write the team's slot columns from an already-validated arrangement."""
+def persist_layout(conn, team: Team, team_uuid) -> None:
+    """Write the team's slot columns from an already-validated arrangement.
+
+    Clear the team's slots first, exactly as PostgresTeamRepository.save does: the
+    slots are written one row at a time, and `players` has a unique index on
+    (team_id, slot_group, slot_position, slot_order), so ANY rearrangement that
+    moves a player into a slot its current occupant hasn't vacated yet trips the
+    index mid-write. NULL slots are mutually distinct, so clearing is always safe,
+    and it also leaves a player who is on the roster but not in the arrangement
+    (a fresh signing on an incomplete roster) correctly unplaced."""
+    conn.execute(
+        text("update players set slot_group = null, slot_position = null, "
+             "slot_order = null where team_id = :tid"),
+        {"tid": team_uuid},
+    )
     for slot_group, slot_position, slot_order, player in _iter_slots(team):
         conn.execute(
             text("update players set slot_group = cast(:g as roster_group), "

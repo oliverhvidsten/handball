@@ -137,6 +137,30 @@ def test_signing_a_free_agent_puts_them_on_the_roster(league):
     assert len(league.load("Boston").roster()) == 20
 
 
+def test_a_signing_that_reorders_the_depth_chart(league):
+    """The rebuild rewrites slots one row at a time, and `players` has a unique index
+    on (team_id, slot_group, slot_position, slot_order). A signing that displaces the
+    top forward moves EVERY forward down one, so each write lands on a slot its
+    previous occupant has not vacated yet -- the layout must be cleared first."""
+    _free_agent("fa-star")
+    with _engine.begin() as c:                      # better than Boston's best forward
+        c.execute(text("update players set offense = 9.5 where legacy_id = 'fa-star'"))
+
+    result = sign_free_agent(_engine, "Boston", "fa-star")
+
+    assert result["placed"] is True
+    with _engine.connect() as c:
+        slots = c.execute(
+            text("select p.legacy_id, p.slot_group::text, p.slot_position::text, p.slot_order "
+                 "from players p join teams t on t.id = p.team_id "
+                 "where t.slug = 'Boston' and p.slot_group is not null"),
+            ).all()
+    placed = {r[0]: (r[1], r[2], r[3]) for r in slots}
+    assert placed["fa-star"] == ("starters", "Forward", 0)      # the new best forward
+    assert placed["boston-f1"] != ("starters", "Forward", 0)    # incumbent moved down
+    assert len(set(placed.values())) == len(placed)             # no two share a slot
+
+
 def test_a_signing_costs_no_cap_space(league):
     _set_contract("boston-d1", SALARY_CAP + 30)          # deep into the luxury tax
     _free_agent("fa-forward")

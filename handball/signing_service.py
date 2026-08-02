@@ -177,7 +177,7 @@ def sign_free_agent(
         # different teams bidding on the same free agent.
         lock_team(conn, team["id"])
         prow = lock_player(conn, legacy_id)
-        ctx = signingsigning_context(conn, team, prow)
+        ctx = signing_context(conn, team, prow)
         check_signing_allowed(ctx, term, value, rules)
         signed = apply_signing(conn, ctx.team_id, prow, term, value, rules=rules)
 
