@@ -2,6 +2,11 @@ GAME MECHANICS RULES
 Variables:
     Court length- 40 meters
     Goal area- 6 meters on each side
+    Regulation- 60 minutes, two 30 minute halves
+
+Every constant named below lives in simulation_vars.py. After changing any of them, run
+`python scripts/calibrate_sim.py` -- it prints what the league actually does, and the
+bands it should land in.
 
 0. For each player, draw an offensive contribuition and a defensive contribution, sum to make total team offense
 and defense for the game (weighted average for amount of time played). Before the game starts, generate a very large
@@ -9,22 +14,61 @@ list of numpy randoms, to be referenced throughout the game. Regenerate if neede
 
 1. Opening posession determined 50-50, ball starts at the 20
 
-2. When a team has the ball: offense / (offense + defense) = completed pass %, an incomplete pass will lead to either a turnover 
-or a loss of meters (could be 0)
+2. When a team has the ball, each pass is completed with probability PASS_COMPLETION; an
+incomplete pass will lead to either a turnover or a loss of meters (could be 0).
+offense / (offense + defense) sits at ~0.5 for every realistic matchup, so using it directly
+as a completion rate would make every pass a coin flip -- which produced ~300 turnovers a
+game. Instead that ratio is used only as an *edge* around parity and remapped in log-odds
+space onto a believable band:
 
-3. If a pass is completed, distance travelled is normally distributed, pull distance from ~N(4, 1.5) for now, but should scale 
+    edge            = offense / (offense + opposing_defense) - 0.5
+    PASS_COMPLETION = sigmoid( logit(PASS_COMPLETION_BASE) + PASS_COMPLETION_GAIN * edge )
+                      clamped to [PASS_COMPLETION_MIN, PASS_COMPLETION_MAX]
+
+BASE sets the level (what evenly matched teams see) and GAIN sets the slope (what an
+advantage is worth). Because the input is a ratio it is scale-free: when ratings inflate
+across the league over seasons, completion -- and therefore scoring -- stays put.
+
+3. If a pass is completed, distance travelled is normally distributed, pull distance from ~N(4, 1.5) for now, but should scale
 depending on how much better the offense is than defense. Time spent will correlate with distance travelled.
 
-4. When the ball is within shooting range, passes become shorter. 
+4. When the ball is within shooting range, passes become shorter.
 
-5. At any point, a player may feasibly take a shot. At the 6 meter, they have a 50% chance of shooting, their probability
-is expressed as a sigmoid function of distance from the 6 meter line, being effectively 100% at the 0 meter (goal)
+5. At any point, a player may feasibly take a shot. The chance of shooting rather than
+passing is a sigmoid of court position, centred on SHOT_SIGMOID_MIDPOINT with steepness
+SHOT_SIGMOID_STEEPNESS -- roughly 50% at the 6 meter line, and effectively certain at the
+goal. See odds_of_taking_shot().
 
-6. If a  shot is taken, a shot on goal will occur with probability e^-k*(distance from goal)
+6. If a shot is taken, it is on goal with probability
 
-7. If a shot is on goal, a goal will occur with probability offense / (offense + m*defense + n*goalie)
+    ON_GOAL_MAX * e^(-K * distance_from_goal) * shooter_skill
 
-8. If a shot does not turn into a goal, 10% chance of offensive rebound
+where shooter_skill is a modest multiplier around an average shooter,
+1 + SHOOTER_SKILL_SLOPE * (shooter.offense - SHOOTER_SKILL_REF), clamped to
+[SHOOTER_SKILL_MIN, SHOOTER_SKILL_MAX]. The skill term must be a multiplier, not the raw
+0-10 rating -- a raw rating pushes this above 1.0 inside about 5 meters.
 
-9. At the end of the game, final score will have been tabulated. Points will be given to individual players
-consistent with their offensive contribution to the team.
+7. If a shot is on goal, it beats the keeper with a probability built from the same
+log-odds remap as rule 2. The quality ratio weighs the attack (the team, plus a heavier
+weight on the shooter) against the defense and the goalie:
+
+    quality = (GOAL_TEAM_WEIGHT * offense + GOAL_SHOOTER_WEIGHT * shooter.offense)
+              / (offense + defense + goalie)
+    P(goal) = sigmoid( logit(GOAL_CONVERSION_BASE)
+                       + GOAL_CONVERSION_GAIN * (quality - GOAL_CONVERSION_REF) )
+
+GOAL_CONVERSION_REF is the league-average quality, so BASE is what an average attack
+converts and GAIN is how much being the better team is worth. calibrate_sim.py reports the
+observed league average so REF can be re-centred if the position weights ever change.
+
+8. If a shot does not turn into a goal, OFFENSIVE_REBOUND_CHANCE of an offensive rebound.
+
+9. Goalies: the starter plays until halftime, the backup opens the second half, and the
+starter returns with BACKUP_GOALIE_MINUTES left. Whoever is in net is the goalie term in
+rule 7, so backup quality genuinely changes goals conceded. Saves and goals allowed are
+counted against the keeper who was actually facing that shot -- never apportioned by the
+minutes schedule -- so a backup beaten repeatedly in his 15 minutes owns that line.
+
+10. At the end of the game, final score will have been tabulated. Points will be given to individual players
+consistent with their offensive contribution to the team. If the game is tied and ties are
+not allowed, overtime is sudden death: alternating possessions, no clock, first goal wins.

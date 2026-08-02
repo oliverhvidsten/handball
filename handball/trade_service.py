@@ -14,24 +14,24 @@ Description: Player/pick trades between two teams -- the write path the website
     trade back -- the swap is all-or-nothing.
 
     Why rebuild the lineup: a swap leaves a hole where the outgoing player sat and
-    an unplaced incoming player, so the arrangement is momentarily illegal.
-    domain.validate is arrangement-level, so we first compute a canonical
-    arrangement (best-by-position into starters -> bench -> reserves), then
-    validate it. Managers can re-tweak afterwards via the lineup API.
+    an unplaced incoming player, so the arrangement is momentarily illegal. The
+    canonical-arrangement rules live in roster_layout (shared with free-agent
+    signing); a trade applies them STRICTLY -- a swap that leaves either side unable
+    to field a legal lineup is rejected. Managers can re-tweak afterwards via the
+    lineup API.
 Author: relational backend
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Iterable
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from handball.db import get_engine
-from handball.domain import ArrangementError, Player, Team, validate
 from handball.league_views import DEFAULT_RULES, RosterRules
-from handball.pg_repository import _iter_slots
+from handball.roster_layout import RosterLayoutError, rebuild_layout
+from handball.salary_cap import ContractError, assert_trade_hard_cap
 
 
 class TradeError(RuntimeError):
@@ -123,6 +123,11 @@ def approve_trade(engine: Engine, trade_id: str, rules: RosterRules = DEFAULT_RU
             {"id": trade_id},
         ).mappings().all()
 
+        # payrolls BEFORE the swap: the hard-cap rule for a trade is comparative (a
+        # team already over the cap on rookie deals may trade DOWN but not up), so
+        # both sides are needed. See salary_cap.assert_trade_hard_cap.
+        payroll_before = {tid: _payroll(conn, tid) for tid in (from_id, to_id)}
+
         # 1. move assets. Players land unplaced (slots cleared) on the destination.
         for a in assets:
             dest = to_id if a["direction"] == "to_to" else from_id
@@ -138,11 +143,16 @@ def approve_trade(engine: Engine, trade_id: str, rules: RosterRules = DEFAULT_RU
                     {"d": dest, "p": a["draft_pick_id"]},
                 )
 
-        # 2. rebuild + validate + persist a legal lineup for both teams.
+        # 2. no team may finish a trade over the hard cap (players keep their
+        #    contracts, so each side's payroll is a pure sum over its new roster).
+        _assert_hard_cap(conn, from_id, payroll_before[from_id], "from_team")
+        _assert_hard_cap(conn, to_id, payroll_before[to_id], "to_team")
+
+        # 3. rebuild + validate + persist a legal lineup for both teams.
         _rearrange_team(conn, from_id, rules)
         _rearrange_team(conn, to_id, rules)
 
-        # 3. commit.
+        # 4. commit.
         conn.execute(
             text("update trades set status = 'committed', resolved_at = now() "
                  "where id = cast(:id as uuid)"),
@@ -180,55 +190,34 @@ def _transition(engine, trade_id, *, frm: tuple[str, ...], to: str, resolve: boo
         )
 
 
-def _rearrange_team(conn, team_uuid, rules: RosterRules) -> None:
-    rows = conn.execute(
-        text("select legacy_id, name, position, is_injured, offense, defense, goalie_skill "
-             "from players where team_id = :t"),
+def _payroll(conn, team_uuid) -> int:
+    """A team's cap-counting payroll ($M/yr). Minimum ($0) contracts contribute
+    nothing, so this sum IS the cap number."""
+    return int(conn.execute(
+        text("select coalesce(sum(contract_value), 0) from players where team_id = :t"),
         {"t": team_uuid},
-    ).mappings().all()
-    players = [
-        Player(id=r["legacy_id"], name=r["name"], position=r["position"],
-               is_injured=r["is_injured"], offense=r["offense"], defense=r["defense"],
-               goalie_skill=r["goalie_skill"])
-        for r in rows
-    ]
-    team = _canonical_team(players, rules)
-    validate(team.arrangement(), team, rules)        # safety net; rolls back on failure
-    for slot_group, slot_position, slot_order, player in _iter_slots(team):
-        conn.execute(
-            text("update players set slot_group = cast(:g as roster_group), "
-                 "slot_position = cast(:p as player_position), slot_order = :o "
-                 "where legacy_id = :lid"),
-            {"g": slot_group, "p": slot_position, "o": slot_order, "lid": player.id},
-        )
+    ).scalar_one())
 
 
-def _canonical_team(players: list[Player], rules: RosterRules) -> Team:
-    """Deterministic legal arrangement: per position, the strongest healthy
-    players fill starters, then bench; the remainder go to reserves. Raises
-    TradeError if a position can't be filled or reserves overflow."""
-    by_pos: dict[str, list[Player]] = defaultdict(list)
-    for p in players:
-        by_pos[p.position].append(p)
-    for plist in by_pos.values():
-        plist.sort(key=lambda p: (p.is_injured, -(p.offense + p.defense + p.goalie_skill)))
+def _assert_hard_cap(conn, team_uuid, payroll_before: int, label: str) -> None:
+    """Raise TradeError unless the team's post-swap payroll obeys the hard cap. A team
+    already over it (only rookie draft deals can do that) may still trade, provided
+    the trade brings its payroll down -- otherwise it could never get back into
+    compliance, and compliance is what lets the season start."""
+    try:
+        assert_trade_hard_cap(payroll_before, _payroll(conn, team_uuid), label=label)
+    except ContractError as e:
+        raise TradeError(str(e)) from e
 
-    starters: dict[str, list[Player]] = {}
-    bench: dict[str, list[Player]] = {}
-    reserves: list[Player] = []
-    for pos in rules.positions:
-        plist = by_pos.get(pos, [])
-        sc, bc = rules.starter_caps[pos], rules.bench_caps[pos]
-        if len(plist) < sc + bc:
-            raise TradeError(f"resulting roster cannot field {pos}: have {len(plist)}, need {sc + bc}")
-        starters[pos] = plist[:sc]
-        bench[pos] = plist[sc:sc + bc]
-        reserves.extend(plist[sc + bc:])
-    if len(reserves) > rules.reserve_max:
-        raise TradeError(f"resulting roster has {len(reserves)} reserves, max {rules.reserve_max}")
 
-    return Team(id="<trade-eval>", name="<trade-eval>", coaches=[],
-                starters=starters, bench=bench, reserves=reserves)
+def _rearrange_team(conn, team_uuid, rules: RosterRules) -> None:
+    """Recompute + persist a legal lineup for one side of the swap. A roster that
+    admits no legal arrangement is a TradeError (the trade is what broke it), so the
+    shared layout failure is re-labelled here."""
+    try:
+        rebuild_layout(conn, team_uuid, rules)
+    except RosterLayoutError as e:
+        raise TradeError(str(e)) from e
 
 
 def _team_uuid(conn, slug: str):

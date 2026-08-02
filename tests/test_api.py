@@ -29,7 +29,8 @@ if _PG_OK:
     from api.main import app
 
 _TABLES = ("teams players injuries awards games player_game_lines "
-           "draft_picks managers trades trade_assets")
+           "draft_picks managers trades trade_assets fa_periods fa_rounds "
+           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series")
 
 
 @pytest.fixture(autouse=True)
@@ -187,6 +188,168 @@ def test_multi_team_owner_can_edit_each_owned_team(client, two_teams):
         assert r.status_code == 200, r.text
 
 
+# -- free-agent signing endpoints ------------------------------------------
+def _free_agent(legacy_id: str, position: str = "Forward") -> None:
+    """A player with no team -- which is all a free agent is."""
+    with _engine.begin() as c:
+        c.execute(
+            text("insert into players (legacy_id, name, position, age, years_in_league, "
+                 "offense, defense, goalie_skill, max_offense, max_defense, max_goalie_skill, "
+                 "variance, peak_age, decline_age, decline_rate, is_injured, contract_term, "
+                 "contract_value, years_remaining, amount_paid, rookie_contract, "
+                 "restricted_free_agent, retired) "
+                 "values (:lid, :lid, cast(:pos as player_position), 26, 4, 6.0, 6.0, 0.1, "
+                 "9.0, 9.0, 0.1, 0.5, 27, 30, 0.15, false, 0, 0, 0, 0, false, true, false)"),
+            {"lid": legacy_id, "pos": position},
+        )
+
+
+def test_signing_a_free_agent(client, two_teams):
+    repo = two_teams
+    _free_agent("fa-forward")
+    _as_manager("Boston")
+
+    r = client.post("/signings", json={"team": "Boston", "player_id": "fa-forward"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # the deal is fixed: 1 year at the league minimum, so payroll doesn't move
+    assert (body["term"], body["value"]) == (1, 0)
+    assert repo.load("Boston").get("fa-forward") is not None
+    assert repo.load("Boston").total_salaries == 0
+
+
+def test_signing_for_a_team_you_dont_own_is_forbidden(client, two_teams):
+    _free_agent("fa-forward")
+    _as_manager("Denver")                        # acting as Denver, signing for Boston
+    r = client.post("/signings", json={"team": "Boston", "player_id": "fa-forward"})
+    assert r.status_code == 403
+
+
+def test_signing_by_a_team_over_the_hard_cap_is_a_conflict(client, two_teams):
+    _free_agent("fa-forward")
+    with _engine.begin() as c:                   # past the $250M hard cap (rookie-deal exemption)
+        c.execute(text("update players set contract_value = 260 where legacy_id='boston-d1'"))
+    _as_manager("Boston")
+    r = client.post("/signings", json={"team": "Boston", "player_id": "fa-forward"})
+    assert r.status_code == 409
+    assert "hard cap" in r.json()["detail"]
+
+
+def test_signing_requires_a_player(client, two_teams):
+    _as_manager("Boston")
+    r = client.post("/signings", json={"team": "Boston"})
+    assert r.status_code == 422                  # body validation, before any DB work
+
+
+def test_team_cap_endpoint(client, two_teams):
+    with _engine.begin() as c:
+        c.execute(text("update players set contract_value = 70 where legacy_id='boston-d1'"))
+    _as_manager("Denver")                        # any authenticated manager may read
+    r = client.get("/teams/Boston/cap")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["payroll"] == 70
+    assert body["roster_size"] == 19
+    assert body["roster_spots"] == 2
+    assert body["limits"]["hard_cap"] == 250
+
+
+def test_team_cap_endpoint_unknown_team(client, two_teams):
+    _as_manager("Boston")
+    assert client.get("/teams/Nowhere/cap").status_code == 404
+
+
+# -- free agency endpoints -------------------------------------------------
+def test_only_the_commissioner_opens_free_agency(client, two_teams):
+    _as_manager("Boston")
+    assert client.post("/free-agency/periods").status_code == 403
+    _as_manager("", role="commissioner")
+    assert client.post("/free-agency/periods").status_code == 201
+
+
+def test_the_commissioner_may_not_bid_for_somebody_elses_team(client, two_teams):
+    """_require_owns lets a commissioner act as any team, which is fine for trades and
+    wrong for a sealed auction: they would be bidding against the league they referee.
+    The free-agency endpoints use the strict check instead."""
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+
+    r = client.post("/free-agency/offers",
+                    json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 10})
+    assert r.status_code == 403
+
+
+def test_a_manager_offers_and_withdraws(client, two_teams):
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+
+    _as_manager("Boston")
+    r = client.post("/free-agency/offers",
+                    json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 10})
+    assert r.status_code == 201, r.text
+    assert r.json()["value"] == 10
+
+    state = client.get("/free-agency/state").json()
+    mine = [t for t in state["teams"] if t["slug"] == "Boston"][0]
+    assert [o["player_id"] for o in mine["offers"]] == ["fa-1"]
+
+    assert client.post("/free-agency/offers/withdraw",
+                       json={"team": "Boston", "player_id": "fa-1"}).status_code == 200
+
+
+def test_an_unaffordable_offer_is_a_conflict(client, two_teams):
+    _free_agent("fa-1")
+    with _engine.begin() as c:                       # capped out
+        c.execute(text("update players set contract_value = 250 where legacy_id='boston-d1'"))
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    r = client.post("/free-agency/offers",
+                    json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 10})
+    assert r.status_code == 409
+    assert "hard cap" in r.json()["detail"]
+
+
+def test_bidding_out_of_turn_is_a_conflict(client, two_teams):
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    client.post("/free-agency/offers",
+                json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 20})
+    _as_manager("Denver")
+    client.post("/free-agency/offers",
+                json={"team": "Denver", "player_id": "fa-1", "term": 3, "value": 10})
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/rounds/close")
+
+    # Denver bid worst, so Denver is on the clock; Boston acting now is out of turn.
+    _as_manager("Boston")
+    auction_id = client.get("/free-agency/state").json()["auctions"][0]["id"]
+    r = client.post(f"/free-agency/auctions/{auction_id}/bid",
+                    json={"team": "Boston", "action": "match"})
+    assert r.status_code == 409
+    assert "not your turn" in r.json()["detail"]
+
+
+def test_the_pool_is_closed_while_free_agency_runs(client, two_teams):
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    r = client.post("/signings", json={"team": "Boston", "player_id": "fa-1"})
+    assert r.status_code == 409
+    assert "free agency is open" in r.json()["detail"]
+
+
+def test_state_is_empty_when_no_market_is_open(client, two_teams):
+    _as_manager("Boston")
+    state = client.get("/free-agency/state").json()
+    assert state["period"] is None and state["your_turn_count"] == 0
+
+
 # -- season simulation endpoints -------------------------------------------
 from handball import schedule_repository as sched_repo  # noqa: E402
 
@@ -251,6 +414,37 @@ def test_run_period_persists_games_and_advances_cursor(client, two_teams):
     # a game row carries its week (regression guard: week used to land NULL)
     with _engine.connect() as c:
         assert c.execute(text("select week from games where season=:s"), {"s": _SEASON}).scalar_one() == 1
+
+
+def test_signing_is_refused_while_a_period_is_simulating(client, two_teams):
+    """A roster addition mid-run would land in a season whose games are half-played."""
+    _seed_one_week_schedule()
+    _free_agent("fa-forward")
+    with _engine.begin() as c:
+        # updated_at is the heartbeat: now() == a live run, not a stale one.
+        c.execute(text("update season_state set run_status='running', updated_at=now() "
+                       "where season=:s"), {"s": _SEASON})
+    _as_manager("Boston")
+    r = client.post("/signings", json={"team": "Boston", "player_id": "fa-forward"})
+    assert r.status_code == 409
+    assert "simulating" in r.json()["detail"]
+
+
+def test_an_open_free_agency_blocks_the_first_period(client, two_teams):
+    """The readiness registry gates period 1 only, and the UI renders whatever comes
+    back -- so a new check needs no API or frontend change to take effect."""
+    _seed_one_week_schedule()
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+
+    state = client.get("/season/state").json()
+    assert state["season_ready"] is False
+    assert any(b["check"] == "free_agency_open" for b in state["season_blockers"])
+    assert state["readiness_gates_next_period"] is True
+
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert any("Free agency" in p for p in r.json()["detail"]["problems"])
 
 
 def test_run_period_rejects_concurrent_run(client, two_teams):
@@ -374,7 +568,189 @@ def test_reset_rejected_while_genuinely_running(client, two_teams):
     assert "in progress" in r.json()["detail"].lower()
 
 
+# -- standings endpoint ----------------------------------------------------
+def test_standings_ranks_by_points(client, two_teams):
+    """Denver finishes on more POINTS despite fewer wins -- the key that also seeds
+    the bracket. Any authenticated manager may read the table."""
+    with _engine.begin() as c:
+        c.execute(text("update teams set wins=30, losses=20, ties=5 where slug='Boston'"))
+        c.execute(text("update teams set wins=29, losses=15, ties=11 where slug='Denver'"))
+    _as_manager("Boston")
+
+    rows = client.get("/standings").json()["teams"]
+    assert [r["slug"] for r in rows] == ["Denver", "Boston"]
+    assert [r["points"] for r in rows] == [29 * 3 + 11, 30 * 3 + 5]
+    assert [r["rank"] for r in rows] == [1, 2]
+
+
+def test_standings_carries_conference_and_division(client, two_teams):
+    _as_manager("Boston")
+    rows = {r["slug"]: r for r in client.get("/standings").json()["teams"]}
+    assert (rows["Boston"]["conference"], rows["Boston"]["division"]) == ("Eastern", "Mid-Atlantic")
+    assert rows["Denver"]["conference"] == "Western"
+    # Each leads its division, and playoff_seed is a PROJECTION -- where the team
+    # would be seeded if the season ended now, over whatever field exists (seeding
+    # the real bracket still demands a full eight per conference).
+    assert rows["Boston"]["division_leader"] and rows["Denver"]["division_leader"]
+    assert rows["Boston"]["playoff_seed"] == 1 and rows["Denver"]["playoff_seed"] == 1
+
+
+def test_standings_head_to_head_outranks_goal_difference(client, two_teams):
+    """Level on points: Boston took the season series 2-1 but was blown out in the
+    one it lost, so its goal difference is far worse. Head-to-head comes first."""
+    with _engine.begin() as c:
+        c.execute(text("update teams set wins=10, losses=5, ties=0"))
+        ids = dict(c.execute(text("select slug, id from teams")).all())
+        for week, (home, away, hs, as_) in enumerate((
+            ("Boston", "Denver", 1, 0),
+            ("Boston", "Denver", 1, 0),
+            ("Denver", "Boston", 10, 0),
+        ), start=1):
+            c.execute(
+                text("insert into games (season, week, home_team_id, away_team_id, "
+                     "home_score, away_score, is_playoff) "
+                     "values (:s, :w, :h, :a, :hs, :as_, false)"),
+                {"s": _SEASON, "w": week, "h": ids[home], "a": ids[away],
+                 "hs": hs, "as_": as_},
+            )
+    _as_manager("Boston")
+
+    rows = client.get("/standings").json()["teams"]
+    assert [r["slug"] for r in rows] == ["Boston", "Denver"]
+    assert rows[0]["goal_diff"] == -8 and rows[1]["goal_diff"] == 8   # GD says Denver
+
+
+def test_standings_counts_only_regular_season_goals(client, two_teams):
+    """Goal difference is a tiebreaker, so a playoff blowout must not feed it."""
+    with _engine.begin() as c:
+        ids = dict(c.execute(text("select slug, id from teams")).all())
+        for is_playoff, hs, as_ in ((False, 3, 1), (True, 40, 0)):
+            c.execute(
+                text("insert into games (season, week, home_team_id, away_team_id, "
+                     "home_score, away_score, is_playoff) "
+                     "values (:s, :w, :h, :a, :hs, :as_, :p)"),
+                {"s": _SEASON, "w": None if is_playoff else 1, "h": ids["Boston"],
+                 "a": ids["Denver"], "hs": hs, "as_": as_, "p": is_playoff},
+            )
+    _as_manager("Boston")
+
+    rows = {r["slug"]: r for r in client.get("/standings").json()["teams"]}
+    assert (rows["Boston"]["goals_for"], rows["Boston"]["goals_against"]) == (3, 1)
+    assert rows["Boston"]["goal_diff"] == 2      # not 42
+
+
+# -- postseason endpoints --------------------------------------------------
+def _crown_champion(winner: str = "Boston", loser: str = "Denver", season: int = _SEASON):
+    """A finished bracket, the shortest one that exists: a single decided Final.
+    handball/playoffs reads the champion off the last round's only series, so this is
+    all the postseason state the offseason gate cares about."""
+    with _engine.begin() as c:
+        c.execute(
+            text("insert into playoff_series (season, round, conference, label, "
+                 "high_seed_team_id, low_seed_team_id, high_seed, low_seed, winner_team_id) "
+                 "select :s, 1, null, 'Final', "
+                 "(select id from teams where slug = :w), "
+                 "(select id from teams where slug = :l), 1, 1, "
+                 "(select id from teams where slug = :w)"),
+            {"s": season, "w": winner, "l": loser},
+        )
+
+
+def test_playoff_bracket_is_readable_by_any_manager(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _as_manager("Boston")                        # a plain manager, not commissioner
+    b = client.get("/playoffs/bracket").json()
+    assert b["started"] is False and b["series"] == []
+    assert b["champion"] is None and b["total_rounds"] == 4
+
+    _crown_champion()
+    b = client.get("/playoffs/bracket").json()
+    assert b["started"] and b["complete"] and b["champion"] == "Boston"
+
+
+def test_playoff_actions_are_commissioner_only(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _as_manager("Boston")
+    assert client.post("/playoffs/start").status_code == 403
+    assert client.post("/playoffs/rounds/run").status_code == 403
+    assert client.post("/playoffs/reset").status_code == 403
+
+
+def test_playoffs_start_requires_a_finished_regular_season(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=3 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/start")
+    assert r.status_code == 409
+    assert "regular season" in r.json()["detail"].lower()
+
+
+def test_playoffs_start_reports_an_unseedable_league(client, two_teams):
+    """Two teams cannot fill an 8-per-conference bracket; the seeding rule says so
+    rather than quietly building a two-team postseason."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/start")
+    assert r.status_code == 409
+    assert "8 teams" in r.json()["detail"]
+
+
+def test_running_a_round_needs_a_bracket(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/rounds/run")
+    assert r.status_code == 409 and "seed the bracket" in r.json()["detail"]
+
+
+def test_running_a_round_is_refused_once_complete(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _crown_champion()
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/rounds/run")
+    assert r.status_code == 409 and "complete" in r.json()["detail"]
+
+
+def test_period_reset_refuses_a_failed_playoff_round(client, two_teams):
+    """One run slot, two phases: recovering a failed playoff round through the
+    period path would delete a week range of regular-season games."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    sched_repo.set_run_status(_engine, _SEASON, "error", period=1, kind="playoff", error="boom")
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/reset")
+    assert r.status_code == 409 and "/playoffs/reset" in r.json()["detail"]
+
+
+def test_season_state_carries_the_postseason_cursor(client, two_teams):
+    _seed_one_week_schedule()
+    _as_manager("Boston")
+    s = client.get("/season/state").json()
+    assert s["playoffs_started"] is False and s["playoffs_complete"] is False
+    assert s["playoff_total_rounds"] == 4 and s["champion"] is None
+
+    _crown_champion()
+    s = client.get("/season/state").json()
+    assert s["playoffs_started"] and s["playoffs_complete"]
+    assert s["champion"] == "Boston"
+
+
 # -- offseason endpoints ---------------------------------------------------
+def test_advance_requires_a_champion(client, two_teams):
+    """The rollover zeroes the records the bracket was seeded from, so it waits for
+    the postseason to finish."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/season/advance")
+    assert r.status_code == 409
+    assert "champion" in r.json()["detail"].lower()
+
+
 def test_advance_requires_complete_season(client, two_teams):
     # season_state exists but the regular season isn't finished
     sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
@@ -399,6 +775,7 @@ def test_advance_season_happy_path(client, two_teams):
     sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
     with _engine.begin() as c:
         c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _crown_champion()                            # the postseason is over too
     _as_manager("", role="commissioner")
 
     r = client.post("/season/advance")

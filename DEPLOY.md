@@ -2,7 +2,7 @@
 
 Three pieces: **Supabase** (DB + Auth, already live), the **API** on Render, and
 the **frontend** on GitHub Pages. Do them in this order — the frontend build needs
-the API's URL.
+the API's URL, and both need the schema to be current.
 
 ```
 Browser ──reads──▶ Supabase (RLS)
@@ -11,8 +11,41 @@ Browser ──reads──▶ Supabase (RLS)
 GitHub Pages (static React)
 ```
 
-Reads (standings, rosters, leaders, login) go straight to Supabase and are always
-fast. Only writes (lineup save, trades) hit the API.
+Most reads (rosters, leaders, login) go straight to Supabase and are always fast.
+Writes (lineup save, trades) hit the API — and so do the few reads that can't be
+expressed as a Supabase query: **standings** (the ranking's head-to-head step is not
+an `ORDER BY`), the **playoff bracket**, and the **free-agency board** (offers are
+sealed and redacted per caller).
+
+## 0. Database migrations
+
+The schema is Alembic, in `alembic/versions/`, applied by running it **locally
+against the target database** — there is no migration step in the Render deploy.
+
+```bash
+python3 -m alembic current        # what the DB is on now
+python3 -m alembic upgrade head   # apply everything outstanding
+```
+
+> **The default target is production.** `handball/db.py` auto-loads the repo-root
+> `.env`, and `HANDBALL_DB_URL` there points at Supabase — so a bare
+> `alembic upgrade head` migrates the live database. That is usually what you want
+> here; just never run it expecting to hit your local DB.
+
+For the local dev database (what the test suite uses — the Postgres-backed tests
+skip unless the URL is localhost):
+
+```bash
+docker start handball-pg
+HANDBALL_DB_URL="postgresql+psycopg://postgres:dev@localhost:5432/handball_dev" \
+  python3 -m alembic upgrade head
+```
+
+**Migrate before deploying code that needs the new schema.** The API queries columns
+the moment it starts serving; if Render picks up the code first, those endpoints
+throw until the migration lands. Every migration in this repo has a working
+`downgrade`, so `alembic downgrade <rev>` is a real escape hatch — but check for
+rows first, since a downgrade that drops a column drops its data.
 
 ## 1. API → Render
 
@@ -52,6 +85,21 @@ Each manager needs a Supabase **auth user** + a `managers` row + `owner_id` on
 their team(s). Use `scripts/seed_owner.py` as the pattern (it sets ownership for a
 given auth email). New managers self-serve once you create their auth user and
 assign their teams.
+
+## Shipping a change
+
+Sections 0–4 are first-time setup. Day to day it is:
+
+1. **Migrate**, if the change adds one (`alembic upgrade head` — section 0).
+2. **Push.** Render redeploys the API from the branch it is watching.
+3. **Merge to `main`**, which runs the Pages workflow and publishes the frontend.
+
+Schema first, then API, then frontend — each step is safe to run while the ones
+after it are still on the old version, and unsafe in the other order. A database
+ahead of the code is harmless (nothing reads the new columns yet); code ahead of
+the database is an outage.
+
+Check the seams after: `/health` on the API, and the affected page in the browser.
 
 ## Notes
 

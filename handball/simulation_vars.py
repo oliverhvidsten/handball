@@ -10,22 +10,66 @@ NEW_PLAYER_MEAN = 5.0
 NEW_PLAYER_STD = 1.5
 STAT_CAP = 10.0
 
-REGULATION_TIME = 60*3600
+REGULATION_TIME = 60 * 60            # a 60-minute game, in seconds
 
 STARTER_MINUTES = 45
 BENCH_MINUTES = 22.5
+BACKUP_GOALIE_MINUTES = 15           # the backup opens the 2nd half; the starter comes back
+                                     # in at the 15-minutes-remaining mark
 
-TIME_PER_PASS = 2
-TIME_PER_SHOT = 5
-TIME_AFTER_SCORE = 10
+# Possession timings. A possession is ~4 passes up the court plus a shot, so these
+# add up to ~31 seconds and give ~50 possessions per team per game.
+TIME_PER_PASS = 6
+TIME_PER_SHOT = 7
+TIME_AFTER_SCORE = 15
 
 MAIN_STAT = 3
 SECONDARY_STAT = 1
 MIDDIE_STATS = 2
 
 
-# tune probabilities
-K = 0.35
+# --- court ---------------------------------------------------------------
+COURT_LENGTH = 40                    # meters; the ball always travels 0 -> 40
+INBOUND_POSITION = 20                # where the ball starts, and restarts after a goal
+GOALIE_MULTIPLIER = 4                # scales goalie_skill onto the team-defense scale
+
+
+# --- shot selection ------------------------------------------------------
+# Probability of shooting rather than passing, as a sigmoid of ball position.
+SHOT_SIGMOID_STEEPNESS = 0.30
+SHOT_SIGMOID_MIDPOINT = 34.0
+
+
+# --- pass completion -----------------------------------------------------
+# The raw offense/(offense+defense) ratio sits at ~0.5 for every real matchup, which
+# would make every pass a coin flip. Instead it is remapped through a logistic:
+# BASE sets the level, GAIN sets how strongly an offense/defense edge moves it.
+PASS_COMPLETION_BASE = 0.94
+PASS_COMPLETION_GAIN = 5.0
+PASS_COMPLETION_MIN = 0.78
+PASS_COMPLETION_MAX = 0.985
+
+
+# --- shot on goal --------------------------------------------------------
+ON_GOAL_MAX = 0.85                   # on-goal rate at the goal mouth for an average shooter
+K = 0.06                             # decay of on-goal odds with distance from goal
+SHOOTER_SKILL_REF = 5.0              # the offense rating that yields a 1.0 multiplier
+SHOOTER_SKILL_SLOPE = 0.06
+SHOOTER_SKILL_MIN = 0.30
+SHOOTER_SKILL_MAX = 1.60
+
+
+# --- goal conversion -----------------------------------------------------
+# Same logistic treatment: the quality ratio is scale-invariant, so BASE holds the
+# league's scoring level steady even as player ratings inflate over seasons.
+GOAL_CONVERSION_BASE = 0.50          # conversion for a league-average attack
+GOAL_CONVERSION_GAIN = 5.0           # how much a quality edge matters
+GOAL_CONVERSION_REF = 0.266          # league-average quality ratio; scripts/calibrate_sim.py
+                                     # prints the observed value so this can be re-centred
+GOAL_TEAM_WEIGHT = 0.5
+GOAL_SHOOTER_WEIGHT = 1.25
+
+OFFENSIVE_REBOUND_CHANCE = 0.10
 
 
 # overall season structure
@@ -73,8 +117,40 @@ INJURY_DECLINE_MULTIPLIER = 1.3      # older players: multiply decline_rate
 MAX_DECLINE_RATE = 0.5               # cap on decline_rate
 
 
+# League table. Points decide the standings, the playoff seeding, and (reversed) the
+# draft order -- see handball/standings.py for the full tiebreak chain.
+POINTS_PER_WIN = 3
+POINTS_PER_TIE = 1
+
+# Playoffs: each conference sends its division winners (seeds 1..N) plus the best
+# remaining teams, to fill this many seeds.
+PLAYOFF_TEAMS_PER_CONFERENCE = 8
+
+# Every playoff round is a best-of-seven: first to 4 wins, up to 7 games. The higher
+# seed hosts games 1, 2, 5, 6 and 7 (the 2-2-1-1-1 pattern in handball/playoffs.py).
+PLAYOFF_SERIES_WINS_NEEDED = 4
+
+
 # Offseason rollover ("advance season").
 RETIREMENT_CANDIDATE_AGE = 35   # players older than this are offered to the commissioner
                                 # as retirement candidates (the commissioner decides).
 DRAFT_ROUNDS = 2                # rounds of draft-pick order seeded from final standings
+
+
+# Salary cap & contracts. All dollar figures are in millions/year (matching
+# Player.contract_value). See handball/salary_cap.py for how these compose into
+# a team's cap situation and what a given team may sign.
+MAX_CONTRACT_YEARS = 5               # longest contract term allowed
+MAX_CONTRACT_VALUE = 45              # highest annual salary allowed ($M/yr)
+MIN_CONTRACT_VALUE = 0               # a "minimum" contract is $0M/yr, so it never
+                                     # counts against the cap (total_salaries sums value)
+
+SALARY_CAP = 150                     # soft cap: a team may exceed it only to re-sign
+                                     # its own players (Bird rights) or via the MLE
+FIRST_LUXURY_TAX_THRESHOLD = 175     # payroll below this -> FIRST_MLE available
+SECOND_LUXURY_TAX_THRESHOLD = 200    # payroll below this -> SECOND_MLE available
+HARD_CAP = 250                       # payroll may NEVER exceed this, under any circumstance
+
+FIRST_MLE = 10                       # mid-level exception for teams below the first threshold
+SECOND_MLE = 5                       # mid-level exception for teams below the second threshold
 

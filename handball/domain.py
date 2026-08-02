@@ -276,8 +276,24 @@ class Player:
             self.decline_rate = min(MAX_DECLINE_RATE, self.decline_rate * INJURY_DECLINE_MULTIPLIER)
 
     def update_contract(self, contract_term: int, contract_salary: int, rookie: bool) -> None:
+        """Put this player on a NEW contract (a draft pick signing today; a free-agent
+        signing or re-signing later). The term/value are checked against the league
+        contract limits here -- salary_cap.validate_contract -- so no write path can
+        create an illegal deal. `years_remaining` restarts at the full term: a new
+        contract is a fresh one, and the offseason expires deals off that counter
+        alone (offseason._process_free_agency).
+
+        What is NOT checked here: whether the signing TEAM has cap room. That is a
+        team-level question the caller owns (salary_cap.check_signing for a signing,
+        assert_trade_hard_cap for a trade), and rookie deals are exempt from it
+        outright -- an over-cap team then shows up as a season-start blocker
+        (season_readiness). Imported lazily to keep domain free of a hard dependency
+        on the cap-rules module."""
+        from handball.salary_cap import validate_contract
+        validate_contract(contract_term, contract_salary)
         self.contract_term = contract_term
         self.contract_value = contract_salary
+        self.years_remaining = contract_term
         if not rookie:
             self.rookie_contract = False
             self.restricted_free_agent = False
@@ -388,6 +404,14 @@ class Team:
     def total_salaries(self) -> int:
         return sum(p.contract_value for p in self.roster())
 
+    @property
+    def cap_situation(self):
+        """This team's standing against the salary cap (cap room, luxury-tax
+        thresholds, MLE, hard-cap headroom). Imported lazily to keep domain free
+        of a hard dependency on the cap-rules module."""
+        from handball.salary_cap import cap_situation
+        return cap_situation(self.total_salaries)
+
     def public_view(self) -> TeamPublicView:
         def proj(group: dict[str, list[Player]]) -> dict[str, list[PlayerPublicView]]:
             return {pos: [p.public_view() for p in plist] for pos, plist in group.items()}
@@ -469,15 +493,21 @@ class Team:
             p.current_season_log["goals"].append(0)
             p.current_season_log["shots_taken"].append(0)
 
-    def update_goalie_stats(self, saves: int, goals_allowed: int) -> None:
-        """Both goalies play (halftime swap): split 60% starter / 40% bench."""
-        saves, goals_allowed = int(saves), int(goals_allowed)
-        starter_saves = int(round(saves * 0.6))
-        starter_ga = int(round(goals_allowed * 0.6))
+    def update_goalie_stats(self, saves_by_keeper, goals_allowed_by_keeper) -> None:
+        """
+        Log each keeper's game, as measured.
+
+        Both goalies play -- the backup opens the second half and the starter returns
+        at the BACKUP_GOALIE_MINUTES mark -- and the simulator counts every save and
+        goal against whoever was actually in net at the time. Each argument is a
+        [starter, backup] pair; nothing is apportioned here.
+        """
+        starter_saves, backup_saves = (int(v) for v in saves_by_keeper)
+        starter_ga, backup_ga = (int(v) for v in goals_allowed_by_keeper)
         self.starters["Goalie"][0].current_season_log["saves"].append(starter_saves)
         self.starters["Goalie"][0].current_season_log["goals_allowed"].append(starter_ga)
-        self.bench["Goalie"][0].current_season_log["saves"].append(saves - starter_saves)
-        self.bench["Goalie"][0].current_season_log["goals_allowed"].append(goals_allowed - starter_ga)
+        self.bench["Goalie"][0].current_season_log["saves"].append(backup_saves)
+        self.bench["Goalie"][0].current_season_log["goals_allowed"].append(backup_ga)
 
     # -- the one write path for roster layout ------------------------------
     def apply_arrangement(self, arr: TeamArrangement, rules: RosterRules = DEFAULT_RULES) -> None:

@@ -8,10 +8,23 @@ NHA write API. Endpoints:
     POST /trades/{id}/reject            receiving manager rejects
     POST /trades/{id}/cancel            proposing manager cancels
     POST /trades/{id}/approve           commissioner approves + commits
+    GET  /teams/{slug}/cap              cap standing + roster room + offer ceilings
+    POST /signings                      manager signs a free agent (pool, 1yr/$0)
+    GET  /free-agency/state             the offseason market, from this manager's side
+    POST /free-agency/periods           commissioner opens the market
+    POST /free-agency/offers            manager offers a free agent a contract
+    POST /free-agency/rounds/close      commissioner closes the sealed offer round
+    POST /free-agency/auctions/{id}/... match / decline / bid / force-forfeit / award
+    GET  /standings                     the league table, ranked (points/H2H/GD)
+    GET  /playoffs/bracket              the postseason bracket + champion
+    POST /playoffs/start                commissioner seeds it from the final standings
+    POST /playoffs/rounds/run           commissioner runs the next round (background)
+    POST /playoffs/reset                commissioner rolls back a failed round
 
 Domain rules are reused, not reimplemented: arrangement edits go through
-Team.apply_arrangement (which runs domain.validate) and trades through
-trade_service. Authorization is by manager↔team ownership + the commissioner role.
+Team.apply_arrangement (which runs domain.validate), trades through trade_service,
+and signings through signing_service (which enforces salary_cap). Authorization is by
+manager↔team ownership + the commissioner role.
 """
 from __future__ import annotations
 
@@ -24,8 +37,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from handball import free_agency as fa
+from handball import league_structure
 from handball import offseason
+from handball import playoffs
+from handball import postseason
 from handball import schedule_repository as sched_repo
+from handball import season_readiness
+from handball import signing_service as sign
+from handball import simulation_vars
+from handball import standings
 from handball import trade_service as ts
 from handball.db import get_engine
 from handball.domain import ArrangementError
@@ -76,6 +97,45 @@ class RetirementBody(BaseModel):
     player_ids: list[str] = Field(default_factory=list)
 
 
+class OfferBody(BaseModel):
+    """A sealed contract offer in a free-agency round. The bounds here only keep
+    nonsense out of the query; the league's contract and cap rules are enforced in
+    handball/free_agency_rules.py."""
+    team: str
+    player_id: str
+    term: int = Field(ge=1)
+    value: int = Field(ge=0)
+
+
+class WithdrawBody(BaseModel):
+    team: str
+    player_id: str
+
+
+class BidBody(BaseModel):
+    """One turn of sequential bidding. `term`/`value` are required for a raise and
+    ignored otherwise -- a match copies the leader's contract by definition."""
+    team: str
+    action: str = Field(pattern="^(match|raise|forfeit)$")
+    term: int | None = Field(default=None, ge=1)
+    value: int | None = Field(default=None, ge=0)
+
+
+class TeamActionBody(BaseModel):
+    """A commissioner intervention aimed at one team (force-forfeit, award)."""
+    team: str
+    reason: str | None = None
+
+
+class SigningBody(BaseModel):
+    """A free-agent signing: who, and onto which team. No contract fields -- every
+    free-agent deal is the same fixed league-minimum contract
+    (signing_service.FREE_AGENT_CONTRACT_YEARS/SALARY); term and value are negotiated
+    only when re-signing your own expiring players."""
+    team: str
+    player_id: str
+
+
 # -- helpers ---------------------------------------------------------------
 def _team_uuid(slug: str) -> str:
     with engine.connect() as conn:
@@ -109,6 +169,30 @@ def _require_owns(mgr: Manager, slug: str) -> None:
 def _require_commissioner(mgr: Manager) -> None:
     if not mgr.is_commissioner:
         raise HTTPException(status_code=403, detail="commissioner only")
+
+
+def _require_owns_strict(mgr: Manager, slug: str) -> None:
+    """Ownership WITHOUT the commissioner bypass _require_owns grants. In a sealed-bid
+    auction the commissioner is also a manager with teams of their own; letting them
+    submit offers or bid as anybody would be a hole, not a convenience. Their powers
+    over the market are the explicit ones -- close a round, force a forfeit, award a
+    deadlock -- each of which is logged as a commissioner action."""
+    if not mgr.owns(_team_uuid(slug)):
+        raise HTTPException(status_code=403, detail="not your team")
+
+
+def _owned_teams(mgr: Manager) -> list[dict]:
+    """The manager's teams as {id, slug, name}. A manager may own several, so every
+    "is it my turn?" question is asked across all of them."""
+    if not mgr.owned_team_ids:
+        return []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("select id::text as id, slug, name from teams "
+                 "where id = any(cast(:ids as uuid[])) order by name"),
+            {"ids": [str(t) for t in mgr.owned_team_ids]},
+        ).mappings().all()
+    return [dict(r) for r in rows]
 
 
 # Season the run controls manage. "Advance season" (a NEW season year) is out of
@@ -221,6 +305,184 @@ def _run_transition(fn, trade_id: str):
     return {"trade_id": trade_id, "status": ts.get_trade_status(engine, trade_id)}
 
 
+# -- free-agent signing ----------------------------------------------------
+@app.get("/teams/{slug}/cap")
+def team_cap(slug: str, mgr: Manager = Depends(get_current_manager)):
+    """A team's salary-cap standing: payroll, cap room, luxury-tax thresholds, MLE,
+    hard-cap headroom, roster room, and the two offer ceilings (own free agent vs
+    outside). Readable by any authenticated manager -- payroll is public information
+    (it's already in Team.public_view) and the free-agent page needs it for every team
+    the user can act as."""
+    try:
+        return sign.team_cap_report(engine, slug)
+    except sign.SigningError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/signings")
+def post_signing(body: SigningBody, mgr: Manager = Depends(get_current_manager)):
+    """Sign a free agent to the fixed league-minimum deal (1 year, $0M). No
+    commissioner approval: unlike a trade there is no counterparty to collude with,
+    the terms aren't negotiable, and eligibility/roster room are checked objectively
+    in signing_service."""
+    _require_owns(mgr, body.team)
+    _require_no_run_in_flight()
+    try:
+        return sign.sign_free_agent(engine, body.team, body.player_id)
+    except sign.SigningError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _require_no_run_in_flight() -> None:
+    """Refuse roster additions while a period is simulating. The simulation loads each
+    team once and writes results back per game, so a player arriving mid-run would land
+    in a season whose games are half-played. A dead run (stale heartbeat) doesn't
+    count -- that has to be reset via /periods/reset anyway."""
+    state = sched_repo.get_season_state(engine, _active_season())
+    if state and state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(
+            status_code=409, detail="a period is currently simulating; try again once it finishes"
+        )
+
+
+# -- free agency: the offseason market -------------------------------------
+# Commissioner controls the phases; managers act inside them. Every rule violation
+# comes back as 409 with the service's own sentence, which is written to be shown to
+# the manager who tried it.
+@app.post("/free-agency/periods", status_code=201)
+def open_free_agency(mgr: Manager = Depends(get_current_manager)):
+    """Open the offseason market for the active season, with its first offer round."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if state and state["periods_run"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="the season is already under way; free agency belongs to the offseason")
+    return _fa_action(fa.open_period, engine, season, actor=mgr.user_id)
+
+
+@app.post("/free-agency/rounds/close")
+def close_offer_round(mgr: Manager = Depends(get_current_manager)):
+    """Shut the sealed offer window and resolve every board at once."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.close_offer_round, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/rounds", status_code=201)
+def open_next_round(mgr: Manager = Depends(get_current_manager)):
+    """Open another offer round on whoever is still unsigned."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.open_next_round, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/close")
+def close_free_agency(mgr: Manager = Depends(get_current_manager)):
+    """End the market. Everyone unsigned returns to the ordinary 1yr/$0 pool."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.close_period, engine, actor=mgr.user_id)
+
+
+@app.post("/free-agency/offers", status_code=201)
+def submit_offer(body: OfferBody, mgr: Manager = Depends(get_current_manager)):
+    """Offer a free agent a contract, replacing any offer this team already has on
+    them. Sealed until the commissioner closes the round."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.submit_offer, engine, body.team, body.player_id,
+                      body.term, body.value, actor=mgr.user_id)
+
+
+@app.post("/free-agency/offers/withdraw")
+def withdraw_offer(body: WithdrawBody, mgr: Manager = Depends(get_current_manager)):
+    """Pull one of your live offers while the round is still open."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.withdraw_offer, engine, body.team, body.player_id,
+                      actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/match")
+def rfa_match(auction_id: int, body: TeamActionBody,
+              mgr: Manager = Depends(get_current_manager)):
+    """Restricted free agency: match the top offer exactly and keep your player."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.match_offer, engine, auction_id, body.team, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/decline")
+def rfa_decline(auction_id: int, body: TeamActionBody,
+                mgr: Manager = Depends(get_current_manager)):
+    """Restricted free agency: pass, and let the player go to the open market."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.decline_match, engine, auction_id, body.team, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/bid")
+def place_bid(auction_id: int, body: BidBody, mgr: Manager = Depends(get_current_manager)):
+    """One turn of sequential bidding: match, raise or forfeit."""
+    _require_owns_strict(mgr, body.team)
+    return _fa_action(fa.place_bid, engine, auction_id, body.team, body.action,
+                      term=body.term, value=body.value, actor=mgr.user_id)
+
+
+@app.post("/free-agency/auctions/{auction_id}/force-forfeit")
+def force_forfeit(auction_id: int, body: TeamActionBody,
+                  mgr: Manager = Depends(get_current_manager)):
+    """Commissioner: drop a team that is stalling a board."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.force_forfeit, engine, auction_id, body.team,
+                      actor=mgr.user_id, reason=body.reason or "commissioner")
+
+
+@app.post("/free-agency/auctions/{auction_id}/award")
+def award_auction(auction_id: int, body: TeamActionBody,
+                  mgr: Manager = Depends(get_current_manager)):
+    """Commissioner: break a no-raise deadlock by awarding the player."""
+    _require_commissioner(mgr)
+    return _fa_action(fa.award_auction, engine, auction_id, body.team,
+                      actor=mgr.user_id, reason=body.reason)
+
+
+def _fa_action(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except (fa.FreeAgencyError, ArrangementError) as e:
+        detail = {"problems": e.problems} if isinstance(e, ArrangementError) else str(e)
+        raise HTTPException(status_code=409, detail=detail)
+
+
+@app.get("/free-agency/state")
+def free_agency_state(mgr: Manager = Depends(get_current_manager)):
+    """The one document the free-agency page polls: the phase, every live board, and --
+    for each team this manager owns -- their cap room, their live offers, and the
+    boards waiting on them. `period` is null when no market is open, which is the
+    signal to render the ordinary pool page.
+
+    Sealed offers stay sealed: a manager gets their OWN offers here, and the boards
+    only exist once the round that produced them has closed."""
+    state = fa.free_agency_state(engine)
+    teams = []
+    waiting = 0
+    for team in _owned_teams(mgr):
+        actions = [
+            {"auction_id": a["id"], "player_id": a["player_id"],
+             "player_name": a["player_name"],
+             "kind": "rfa_match" if a["status"] == "matching" else "bid",
+             "waiting_since": a["waiting_since"]}
+            for a in state.get("auctions", [])
+            if (a["status"] == "bidding" and a["turn_team_id"] == team["id"])
+            or (a["status"] == "matching" and a["rights_team_id"] == team["id"])
+        ]
+        waiting += len(actions)
+        teams.append({
+            **team,
+            "cap": sign.team_cap_report(engine, team["slug"]),
+            "offers": fa.team_offers(engine, team["slug"]) if state["period"] else [],
+            "action_required": actions,
+        })
+    return {**state, "teams": teams, "your_turn_count": waiting,
+            "is_commissioner": mgr.is_commissioner}
+
+
 # -- season simulation -----------------------------------------------------
 @app.get("/season/state")
 def season_state(mgr: Manager = Depends(get_current_manager)):
@@ -241,8 +503,42 @@ def season_state(mgr: Manager = Depends(get_current_manager)):
         "run_status": run_status,
         "run_period": state["run_period"] if state else None,
         "run_error": state["run_error"] if state else None,
+        "run_kind": state["run_kind"] if state else "period",
         "run_stale": _run_stale(state),
         "regular_season_complete": periods_run >= PERIODS,
+        # Postseason cursor. The Commissioner page needs it to know whether the next
+        # action is "seed the bracket", "run round N", or "advance the season".
+        **_playoff_fields(season, periods_run),
+        # Season-start readiness (season_readiness.py). Only gates the FIRST period
+        # -- once the season is under way these are no longer blockers -- but it is
+        # always reported so the page can show what's outstanding during the
+        # offseason. The registry can grow; the page renders whatever comes back.
+        **_readiness_fields(season, periods_run),
+    }
+
+
+def _playoff_fields(season: int, periods_run: int) -> dict:
+    """The postseason's contribution to /season/state. `playoffs_started` is what
+    the page gates the "seed the bracket" button on; `playoffs_complete` is what
+    gates advancing the season."""
+    data = playoffs.bracket(engine, season)
+    return {
+        "playoffs_started": data["started"],
+        "playoffs_complete": data["complete"],
+        "playoff_next_round": data["next_round"],
+        "playoff_total_rounds": data["total_rounds"],
+        "champion": data["champion"],
+    }
+
+
+def _readiness_fields(season: int, periods_run: int) -> dict:
+    report = season_readiness.readiness_report(engine, season)
+    return {
+        "season_ready": report["ready"],
+        "season_blockers": report["blockers"],
+        "readiness_checks": report["checks"],
+        # what actually gates the button: readiness only binds before period 1.
+        "readiness_gates_next_period": periods_run == 0 and not report["ready"],
     }
 
 
@@ -324,9 +620,11 @@ def _run_period_job(season: int, period: int, injury_seed: int | None) -> None:
         )
         league.run_period(period)
         sched_repo.bump_periods_run(engine, season)
-        sched_repo.set_run_status(engine, season, "done", period=period)
+        sched_repo.set_run_status(engine, season, "done", period=period, kind="period")
     except Exception as e:  # noqa: BLE001 - surface any failure to the operator
-        sched_repo.set_run_status(engine, season, "error", period=period, error=str(e))
+        sched_repo.set_run_status(
+            engine, season, "error", period=period, kind="period", error=str(e)
+        )
     finally:
         stop.set()
 
@@ -359,10 +657,20 @@ def run_period(
             status_code=409,
             detail="clear the trade approval queue before running a period",
         )
+    # Starting the season (period 1) has preconditions the rest of the season does
+    # not -- e.g. no team may open above the hard cap after signing its draft picks.
+    # The whole list lives in season_readiness; every blocker is reported at once.
+    if next_period == 1:
+        try:
+            season_readiness.assert_season_can_start(engine, season)
+        except season_readiness.SeasonNotReady as e:
+            raise HTTPException(status_code=409, detail={"problems": e.problems})
 
     # Flip to 'running' synchronously (so a double-click is rejected above), then
     # hand the heavy work to a background task that runs after the response.
-    sched_repo.set_run_status(engine, season, "running", period=next_period, error=None)
+    sched_repo.set_run_status(
+        engine, season, "running", period=next_period, kind="period", error=None
+    )
     background.add_task(_run_period_job, season, next_period, state["injury_seed"])
     return {"season": season, "period": next_period, "run_status": "running"}
 
@@ -371,7 +679,10 @@ def run_period(
 def reset_run(mgr: Manager = Depends(get_current_manager)):
     """Recover an interrupted (stale 'running') or failed ('error') run: roll back
     the partial period's games + record deltas and clear the status so a clean retry
-    is possible. Rejected for a run that is genuinely still in progress."""
+    is possible. Rejected for a run that is genuinely still in progress.
+
+    Only for a REGULAR-SEASON run; a failed playoff round resets through
+    /playoffs/reset, which rolls back a round rather than a week range."""
     _require_commissioner(mgr)
     season = _active_season()
     state = sched_repo.get_season_state(engine, season)
@@ -381,9 +692,202 @@ def reset_run(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(status_code=409, detail="a period is currently in progress")
     if state["run_status"] not in ("running", "error"):
         raise HTTPException(status_code=409, detail="nothing to reset")
+    if state["run_kind"] == "playoff":
+        raise HTTPException(
+            status_code=409,
+            detail="the failed run was a playoff round; reset it with /playoffs/reset",
+        )
 
     rolled = sched_repo.reset_run(engine, season, state["run_period"])
     return {"season": season, "rolled_back_games": rolled, "run_status": "idle"}
+
+
+# -- standings -------------------------------------------------------------
+@app.get("/standings")
+def standings_table(mgr: Manager = Depends(get_current_manager)):
+    """The league table, ranked by the one rule (handball/standings.py): points, then
+    head-to-head, then goal difference. Served from the API rather than read straight
+    from Supabase because head-to-head cannot be expressed as an ORDER BY -- and a
+    table that sorted differently from the bracket it seeds would be worse than no
+    table at all.
+
+    Each row carries its conference, division, whether it currently leads that
+    division, and the playoff seed it would take if the season ended now."""
+    season = _active_season()
+    table = standings.load_league_table(engine, season)
+    ranked = table.ranked()
+    rows = table.by_id()
+
+    with engine.connect() as conn:
+        names = dict(conn.execute(text("select slug, name from teams")).all())
+
+    # Teams outside the configured league map (fixtures, a part-built league) still
+    # get a row -- they just can't be placed in a conference or a bracket.
+    known = [t for t in ranked if t in league_structure.all_teams()]
+    seeded = postseason.seed_conferences(
+        known, league_structure.get_conference,
+        simulation_vars.PLAYOFF_TEAMS_PER_CONFERENCE, league_structure.division_key,
+    )
+    seed_of = {t: i + 1 for teams in seeded.values() for i, t in enumerate(teams)}
+    leaders, led = set(), set()           # `known` is ranked, so first seen leads
+    for t in known:
+        division = league_structure.division_key(t)
+        if division not in led:
+            led.add(division)
+            leaders.add(t)
+
+    return {
+        "season": season,
+        "teams": [
+            {
+                "rank": i + 1,
+                "slug": slug,
+                "name": names.get(slug, slug),
+                "wins": rows[slug].wins,
+                "losses": rows[slug].losses,
+                "ties": rows[slug].ties,
+                "points": rows[slug].points,
+                "goals_for": rows[slug].goals_for,
+                "goals_against": rows[slug].goals_against,
+                "goal_diff": rows[slug].goal_diff,
+                "conference": _safe(league_structure.get_conference, slug),
+                "division": _safe(league_structure.get_division, slug),
+                "division_leader": slug in leaders,
+                "playoff_seed": seed_of.get(slug),
+            }
+            for i, slug in enumerate(ranked)
+        ],
+    }
+
+
+def _safe(fn, team: str):
+    """Conference/division for a team that may not be in the league map."""
+    try:
+        return fn(team)
+    except KeyError:
+        return None
+
+
+# -- postseason ------------------------------------------------------------
+@app.get("/playoffs/bracket")
+def playoff_bracket(mgr: Manager = Depends(get_current_manager)):
+    """The season's bracket -- every matchup created so far, its result if played,
+    and the champion once there is one. Readable by any authenticated manager; it is
+    the one document the Playoffs page renders."""
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    data = playoffs.bracket(engine, season)
+    return {
+        **data,
+        "rounds_run": state["playoff_rounds_run"] if state else 0,
+        "regular_season_complete": bool(state and state["periods_run"] >= PERIODS),
+        "run_status": state["run_status"] if state else "idle",
+        "run_kind": state["run_kind"] if state else "period",
+        "run_error": state["run_error"] if state else None,
+        "run_stale": _run_stale(state),
+        "is_commissioner": mgr.is_commissioner,
+    }
+
+
+@app.post("/playoffs/start", status_code=201)
+def start_playoffs(mgr: Manager = Depends(get_current_manager)):
+    """Seed the bracket from the final standings. Commissioner-only; the regular
+    season must be complete and the trade queue clear -- the seeding IS the finished
+    standings, so a pending trade must land before or after it, never during."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if not state or state["periods_run"] < PERIODS:
+        raise HTTPException(status_code=409, detail="finish the regular season first")
+    if state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(status_code=409, detail="a run is already in progress")
+    if not _queue_clear():
+        raise HTTPException(
+            status_code=409,
+            detail="clear the trade approval queue before seeding the bracket",
+        )
+    # The same ranking advance_season seeds the draft from.
+    ranked = build_production_league_pg(year=season).ranked_team_ids()
+    try:
+        return playoffs.start_playoffs(engine, season, ranked)
+    except playoffs.PlayoffError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _run_playoff_round_job(season: int, round_num: int, injury_seed: int | None) -> None:
+    """Background worker for one playoff round -- the postseason twin of
+    _run_period_job, sharing the same keep-alive and the same status row."""
+    stop = threading.Event()
+    keepalive = threading.Thread(target=_keepalive_loop, args=(season, stop), daemon=True)
+    keepalive.start()
+    try:
+        playoffs.run_round(engine, season, injury_seed=injury_seed)
+        sched_repo.set_run_status(engine, season, "done", period=round_num, kind="playoff")
+    except Exception as e:  # noqa: BLE001 - surface any failure to the operator
+        sched_repo.set_run_status(
+            engine, season, "error", period=round_num, kind="playoff", error=str(e)
+        )
+    finally:
+        stop.set()
+
+
+@app.post("/playoffs/rounds/run", status_code=202)
+def run_playoff_round(
+    background: BackgroundTasks, mgr: Manager = Depends(get_current_manager)
+):
+    """Simulate the next playoff round in the background and return 202; the page
+    polls /playoffs/bracket for completion. Commissioner-only. Managers may edit
+    lineups between rounds, which is the point of running one round at a time."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if not state:
+        raise HTTPException(status_code=409, detail="no season to run")
+    if state["run_status"] == "running":
+        if _run_stale(state):
+            raise HTTPException(
+                status_code=409,
+                detail="the previous run was interrupted; reset it before running again",
+            )
+        raise HTTPException(status_code=409, detail="a run is already in progress")
+
+    data = playoffs.bracket(engine, season)
+    if not data["started"]:
+        raise HTTPException(status_code=409, detail="seed the bracket first")
+    if data["next_round"] is None:
+        raise HTTPException(status_code=409, detail="the postseason is complete")
+    if not _queue_clear():
+        raise HTTPException(
+            status_code=409,
+            detail="clear the trade approval queue before running a round",
+        )
+
+    round_num = data["next_round"]
+    sched_repo.set_run_status(
+        engine, season, "running", period=round_num, kind="playoff", error=None
+    )
+    background.add_task(
+        _run_playoff_round_job, season, round_num, state["injury_seed"]
+    )
+    return {"season": season, "round": round_num, "run_status": "running"}
+
+
+@app.post("/playoffs/reset")
+def reset_playoff_round(mgr: Manager = Depends(get_current_manager)):
+    """Recover an interrupted or failed playoff round: delete its games, undecide its
+    matchups, and drop any round built off it, so it can be run again. Injuries
+    rolled during the round stand (see handball/playoffs.reset_round)."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if state and state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(status_code=409, detail="a run is currently in progress")
+    try:
+        result = playoffs.reset_round(engine, season)
+    except playoffs.PlayoffError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    sched_repo.clear_run(engine, season)
+    return {**result, "run_status": "idle"}
 
 
 # -- offseason: retirement + advance season --------------------------------
@@ -407,15 +911,23 @@ def retire(body: RetirementBody, mgr: Manager = Depends(get_current_manager)):
 @app.post("/season/advance")
 def advance_season(mgr: Manager = Depends(get_current_manager)):
     """Offseason rollover to the next season. Commissioner-only; the regular season
-    must be complete and the trade queue clear. Runs synchronously in ONE transaction
-    (no game simulation, so it's quick): assign awards, seed the next draft order from
-    the final standings, age every non-retired player, move expired contracts to free
-    agency, zero records, and open the new season. A failure rolls everything back."""
+    and the postseason must both be finished and the trade queue clear. Runs
+    synchronously in ONE transaction (no game simulation, so it's quick): assign
+    awards, seed the next draft order from the final standings, age every non-retired
+    player, move expired contracts to free agency, zero records, and open the new
+    season. A failure rolls everything back."""
     _require_commissioner(mgr)
     season = _active_season()
     state = sched_repo.get_season_state(engine, season)
     if not state or state["periods_run"] < PERIODS:
         raise HTTPException(status_code=409, detail="finish the regular season first")
+    # The rollover zeroes W-L and reseeds the draft off the final standings, so it
+    # must not run while a bracket still depends on them (the Final seeds itself
+    # from those records).
+    if not playoffs.is_complete(engine, season):
+        raise HTTPException(
+            status_code=409, detail="crown a champion before advancing the season"
+        )
     if not _queue_clear():
         raise HTTPException(
             status_code=409, detail="clear the trade approval queue before advancing"

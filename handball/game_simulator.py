@@ -14,8 +14,41 @@ from itertools import chain
 from handball.utils import ProbabilityStack
 from handball.domain import Team
 from handball.simulation_vars import (
-    REGULATION_TIME, K, TIME_PER_PASS, TIME_PER_SHOT, MAIN_STAT, SECONDARY_STAT, MIDDIE_STATS, TIME_AFTER_SCORE, STARTER_MINUTES, BENCH_MINUTES
+    REGULATION_TIME, K, TIME_PER_PASS, TIME_PER_SHOT, MAIN_STAT, SECONDARY_STAT, MIDDIE_STATS,
+    TIME_AFTER_SCORE, STARTER_MINUTES, BENCH_MINUTES, BACKUP_GOALIE_MINUTES,
+    COURT_LENGTH, INBOUND_POSITION, GOALIE_MULTIPLIER,
+    SHOT_SIGMOID_STEEPNESS, SHOT_SIGMOID_MIDPOINT,
+    PASS_COMPLETION_BASE, PASS_COMPLETION_GAIN, PASS_COMPLETION_MIN, PASS_COMPLETION_MAX,
+    ON_GOAL_MAX, SHOOTER_SKILL_REF, SHOOTER_SKILL_SLOPE, SHOOTER_SKILL_MIN, SHOOTER_SKILL_MAX,
+    GOAL_CONVERSION_BASE, GOAL_CONVERSION_GAIN, GOAL_CONVERSION_REF,
+    GOAL_TEAM_WEIGHT, GOAL_SHOOTER_WEIGHT, OFFENSIVE_REBOUND_CHANCE,
     )
+
+# Overtime is sudden death and burns no clock, so it terminates only probabilistically.
+# This caps it in the (astronomically unlikely) event neither side ever scores.
+MAX_OVERTIME_POSSESSIONS = 1000
+
+# Indices into StatTracker's per-keeper goalie tallies.
+STARTER, BACKUP = 0, 1
+
+
+def _sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def _logit(p):
+    return np.log(p / (1 - p))
+
+
+def _remap(base, gain, edge, lo, hi):
+    """
+    Shift a baseline probability by `gain * edge` in log-odds space, then clamp.
+
+    `base` sets the level (what an evenly matched pairing sees) and `gain` sets the
+    slope (how much an advantage is worth). Keeping the two separable is what lets
+    scoring level and competitive balance be tuned independently.
+    """
+    return float(np.clip(_sigmoid(_logit(base) + gain * edge), lo, hi))
 
 
 class GameSimulator():
@@ -29,7 +62,7 @@ class GameSimulator():
 
         self.home_stats, home_scorer_stats, self.away_stats, away_scorer_stats = self.init_stats()
 
-        self.ball_position = 20
+        self.ball_position = INBOUND_POSITION
         self.game_clock = GameClock()
 
         self.stat_tracker = StatTracker(
@@ -114,8 +147,8 @@ class GameSimulator():
             ## Calculate goalies' stats (an injured goalie contributes nothing)
             start_goalie = team_obj.starters["Goalie"][0]
             bench_goalie = team_obj.bench["Goalie"][0]
-            goalie = np.random.normal(start_goalie.goalie_skill, start_goalie.variance) * 4 * (not start_goalie.is_injured)
-            goalie_reserve = np.random.normal(bench_goalie.goalie_skill, bench_goalie.variance) * 4 * (not bench_goalie.is_injured)
+            goalie = np.random.normal(start_goalie.goalie_skill, start_goalie.variance) * GOALIE_MULTIPLIER * (not start_goalie.is_injured)
+            goalie_reserve = np.random.normal(bench_goalie.goalie_skill, bench_goalie.variance) * GOALIE_MULTIPLIER * (not bench_goalie.is_injured)
 
             # Build combined performance list (15 non-goalies + 2 goalies = 17 players)
             # Goalies don't contribute to offense/defense, so their offense contribution is 0
@@ -131,15 +164,18 @@ class GameSimulator():
         home_offense, home_defense, home_goalie, home_goalie_reserve, home_scorer_stats = calculate_stats(self.home_team)
         away_offense, away_defense, away_goalie, away_goalie_reserve, away_scorer_stats = calculate_stats(self.away_team)
 
- 
-        home_ratio = home_offense / (home_offense + away_defense)
-        away_ratio = away_offense / (away_offense + home_defense)
+        # Pass completion. The raw ratio is ~0.5 for every real matchup -- using it
+        # directly would make every pass a coin flip and produce hundreds of turnovers
+        # a game -- so it is remapped onto a realistic band around PASS_COMPLETION_BASE.
+        # The input is a ratio, so league-wide rating inflation leaves this untouched.
+        home_completion = pass_completion(home_offense, away_defense)
+        away_completion = pass_completion(away_offense, home_defense)
 
 
         return (
-            {"offense": home_offense, "defense": home_defense, "ratio": home_ratio, "goalie": home_goalie, "bench_goalie": home_goalie_reserve},
+            {"offense": home_offense, "defense": home_defense, "pass_completion": home_completion, "goalie": home_goalie, "bench_goalie": home_goalie_reserve},
             home_scorer_stats,
-            {"offense": away_offense, "defense": away_defense, "ratio": away_ratio, "goalie": away_goalie, "bench_goalie": away_goalie_reserve},
+            {"offense": away_offense, "defense": away_defense, "pass_completion": away_completion, "goalie": away_goalie, "bench_goalie": away_goalie_reserve},
             away_scorer_stats
         )
 
@@ -184,6 +220,8 @@ class GameSimulator():
         self.away_stats["goalie"] = self.away_stats["bench_goalie"]
         self.away_stats["bench_goalie"] = temp
 
+        self.stat_tracker.set_keeper_in_net(BACKUP)
+
         # Set the clock and simulate seond half
         self.game_clock.set_time(REGULATION_TIME/2)
         self.simulate_half(second_half=True)
@@ -213,10 +251,12 @@ class GameSimulator():
             self.defense_stats = self.home_stats
 
         # Reset ball position
-        self.ball_position = 20
+        self.ball_position = INBOUND_POSITION
 
         # Keep playing until someone scores
-        while self.home_score == self.away_score:
+        possessions = 0
+        while self.home_score == self.away_score and possessions < MAX_OVERTIME_POSSESSIONS:
+            possessions += 1
             scored, turnover_position = self.offensive_posession_overtime()
 
             if scored:
@@ -233,20 +273,20 @@ class GameSimulator():
             self.defense_stats = temp
 
             # Set ball position after turnover
-            if turnover_position:
-                self.ball_position = 40 - turnover_position
+            if turnover_position is not None:
+                self.ball_position = COURT_LENGTH - turnover_position
             else:
-                self.ball_position = 20
+                self.ball_position = INBOUND_POSITION
 
     def offensive_posession_overtime(self):
         """
         Overtime possession - no clock management, just play until scored or turnover.
         """
-        turnover_position = False
+        turnover_position = None
         scored = False
 
         while True:
-            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))):
+            if self.prob_stack.pop() < odds_of_taking_shot(self.ball_position):
                 # Take a shot
                 scored, off_recovery, turnover = self.stat_tracker.take_shot(
                     ball_position=self.ball_position,
@@ -257,7 +297,7 @@ class GameSimulator():
                     time_left=0,  # OT has no clock display
                 )
                 if turnover:
-                    turnover_position = self.ball_position + (40 - self.ball_position) * self.prob_stack.pop()
+                    turnover_position = self.ball_position + (COURT_LENGTH - self.ball_position) * self.prob_stack.pop()
                     break
                 if scored:
                     break
@@ -265,10 +305,10 @@ class GameSimulator():
                     pass
             else:
                 # Pass the ball
-                if np.random.uniform(0, 1) < self.offense_stats["ratio"]:
-                    self.ball_position += min(40 - self.ball_position, np.random.normal(4, 1.5))
+                if np.random.uniform(0, 1) < self.offense_stats["pass_completion"]:
+                    self.ball_position += min(COURT_LENGTH - self.ball_position, np.random.normal(4, 1.5))
                 else:
-                    turnover_position = self.ball_position + min(40 - self.ball_position, np.random.normal(4, 1.5)) * self.prob_stack.pop()
+                    turnover_position = self.ball_position + min(COURT_LENGTH - self.ball_position, np.random.normal(4, 1.5)) * self.prob_stack.pop()
                     if self.home_posession:
                         self.stat_tracker.home_turnovers += 1
                     else:
@@ -283,8 +323,10 @@ class GameSimulator():
             
             while self.game_clock.time_left > 0:
 
-                if swap_goalie and self.game_clock.time_left <= (REGULATION_TIME/2)+30:
-                    # Switch the starting goalie back in around the 15 minute mark
+                if swap_goalie and self.game_clock.time_left <= (REGULATION_TIME/2) - BACKUP_GOALIE_MINUTES*60:
+                    # Switch the starting goalie back in at the 15-minutes-remaining mark.
+                    # (Comparing against REGULATION_TIME/2 directly would fire on the very
+                    # first iteration, which is why the backup used to never play at all.)
                     temp = self.home_stats["goalie"]
                     self.home_stats["goalie"] = self.home_stats["bench_goalie"]
                     self.home_stats["bench_goalie"] = temp
@@ -292,6 +334,8 @@ class GameSimulator():
                     temp = self.away_stats["goalie"]
                     self.away_stats["goalie"] = self.away_stats["bench_goalie"]
                     self.away_stats["bench_goalie"] = temp
+
+                    self.stat_tracker.set_keeper_in_net(STARTER)
 
                     # Finished swap, dont swap again
                     swap_goalie = False
@@ -314,14 +358,11 @@ class GameSimulator():
 
                 # Set the position of the ball (if turnover, put at specific location. else, put at the end of the court for an inbound)
                 # we will always be going from 0 -> 40 for ball position.  Dont have one team go 40->0 (too complicated)
-                if turnover_position:
-                    self.ball_position = 40-turnover_position
-                elif scored: 
-                    self.ball_position = 20
-                    try:
-                        self.game_clock.decrement(TIME_AFTER_SCORE)
-                    except:
-                        break
+                if turnover_position is not None:
+                    self.ball_position = COURT_LENGTH-turnover_position
+                elif scored:
+                    self.ball_position = INBOUND_POSITION
+                    self.game_clock.decrement(TIME_AFTER_SCORE)
 
 
 
@@ -329,18 +370,15 @@ class GameSimulator():
         """
         Run the offensive posession until scored or turned over
         """
-        turnover_position = False
+        turnover_position = None
         scored = False
 
         # Evaluate shots and passes until something happens
         while True:
-            if self.prob_stack.pop() < 1 / (1 + np.exp(-0.3 * (self.ball_position-34))): # odds of taking a shot
-                try: # Decrement 
-                    self.game_clock.decrement(TIME_PER_SHOT)
-                except:
-                    # This shot will evaluate as normal, acting like a buzzer beater shot
-                    pass
-                
+            if self.prob_stack.pop() < odds_of_taking_shot(self.ball_position): # odds of taking a shot
+                # If the clock expires here the shot still resolves, as a buzzer beater
+                self.game_clock.decrement(TIME_PER_SHOT)
+
                 # Take a shot with the stat tracker object
                 scored, off_recovery, turnover = self.stat_tracker.take_shot(
                     ball_position=self.ball_position,
@@ -350,9 +388,9 @@ class GameSimulator():
                     home_posession=self.home_posession,
                     time_left=self.game_clock.time_left,
                 )
-                if turnover: 
+                if turnover:
                     # Put in info for where the turnover took place (don't track turnovers due to missed shots)
-                    turnover_position = self.ball_position + (40 - self.ball_position)*self.prob_stack.pop()
+                    turnover_position = self.ball_position + (COURT_LENGTH - self.ball_position)*self.prob_stack.pop()
                     break
                 if scored:
                     break
@@ -360,11 +398,9 @@ class GameSimulator():
                     pass
             else:
                 # Pass the ball
-                if np.random.uniform(0,1) < self.offense_stats["ratio"]: # type: ignore
-                    self.ball_position += min(40-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
-                    try: # Decrement game clock
-                        self.game_clock.decrement(TIME_PER_PASS)
-                    except:
+                if np.random.uniform(0,1) < self.offense_stats["pass_completion"]: # type: ignore
+                    self.ball_position += min(COURT_LENGTH-self.ball_position, np.random.normal(4, 1.5)) # normal pass completed and advanced
+                    if not self.game_clock.decrement(TIME_PER_PASS):
                         # Time has run out, immediately take a buzzer beater shot
                         scored, _, _ = self.stat_tracker.take_shot(
                             ball_position=self.ball_position,
@@ -377,18 +413,15 @@ class GameSimulator():
                         break
 
                 else:
-                    turnover_position = self.ball_position + min(40-self.ball_position, np.random.normal(4, 1.5))*self.prob_stack.pop()
+                    turnover_position = self.ball_position + min(COURT_LENGTH-self.ball_position, np.random.normal(4, 1.5))*self.prob_stack.pop()
                     # Record passing turnover and break out of loop
                     if self.home_posession:
                         self.stat_tracker.home_turnovers += 1
                     else:
                         self.stat_tracker.away_turnovers += 1
-                    try: # Decrement 
-                        self.game_clock.decrement(TIME_PER_PASS)
-                    except:
-                        # Cannot take buzzer beater due to turnover
-                        pass
-                    
+                    # Cannot take a buzzer beater after a turnover, so the clock result is ignored
+                    self.game_clock.decrement(TIME_PER_PASS)
+
                     break
 
         return scored, turnover_position
@@ -415,14 +448,15 @@ class GameSimulator():
             shots_taken=self.stat_tracker.away_shots
         )
 
-        # Update goalie stats
+        # Update goalie stats. Each keeper is credited with exactly the shots they
+        # faced, so a backup who was beaten repeatedly in his 15 minutes owns that.
         self.home_team.update_goalie_stats(
-            saves=self.stat_tracker.home_goalie_saves,
-            goals_allowed=self.stat_tracker.home_goalie_goals_allowed
+            saves_by_keeper=self.stat_tracker.home_goalie_saves_by_keeper,
+            goals_allowed_by_keeper=self.stat_tracker.home_goalie_goals_allowed_by_keeper,
         )
         self.away_team.update_goalie_stats(
-            saves=self.stat_tracker.away_goalie_saves,
-            goals_allowed=self.stat_tracker.away_goalie_goals_allowed
+            saves_by_keeper=self.stat_tracker.away_goalie_saves_by_keeper,
+            goals_allowed_by_keeper=self.stat_tracker.away_goalie_goals_allowed_by_keeper,
         )
 
         # Build game summary for RecordKeeper
@@ -472,8 +506,9 @@ class GameClock():
         self.time_left = time
     
     def decrement(self, amount):
+        """Run the clock down. Returns False once time has expired."""
         self.time_left = max(0, self.time_left-amount)
-        10/self.time_left  # This will cause the game clock to raise an error when it reaches 0
+        return self.time_left > 0
 
     @staticmethod
     def time_to_str(seconds):
@@ -521,9 +556,11 @@ class StatTracker():
         self.home_off_recov = 0
         self.home_turnovers = 0
 
-        # Goalie stats for home team (saves by away goalie against home offense)
-        self.home_goalie_saves = 0  # saves made by home goalie
-        self.home_goalie_goals_allowed = 0  # goals allowed by home goalie
+        # Goalie stats for home team, split by which keeper was actually in net when
+        # the shot arrived. STARTER / BACKUP index into these; the team totals are the
+        # home_goalie_saves / home_goalie_goals_allowed properties below.
+        self.home_goalie_saves_by_keeper = [0, 0]
+        self.home_goalie_goals_allowed_by_keeper = [0, 0]
 
 
         ## SET UP AWAY TEAM INFO
@@ -547,9 +584,35 @@ class StatTracker():
         self.away_off_recov = 0
         self.away_turnovers = 0
 
-        # Goalie stats for away team
-        self.away_goalie_saves = 0  # saves made by away goalie
-        self.away_goalie_goals_allowed = 0  # goals allowed by away goalie
+        # Goalie stats for away team (see the home comment above)
+        self.away_goalie_saves_by_keeper = [0, 0]
+        self.away_goalie_goals_allowed_by_keeper = [0, 0]
+
+        # Which keeper is between the posts right now. Both teams swap at the same
+        # moments -- halftime, then back at the BACKUP_GOALIE_MINUTES mark -- so a
+        # single index covers the whole game.
+        self.keeper_in_net = STARTER
+
+    @property
+    def home_goalie_saves(self):
+        """Saves made by the home team's keepers, both combined."""
+        return sum(self.home_goalie_saves_by_keeper)
+
+    @property
+    def home_goalie_goals_allowed(self):
+        return sum(self.home_goalie_goals_allowed_by_keeper)
+
+    @property
+    def away_goalie_saves(self):
+        return sum(self.away_goalie_saves_by_keeper)
+
+    @property
+    def away_goalie_goals_allowed(self):
+        return sum(self.away_goalie_goals_allowed_by_keeper)
+
+    def set_keeper_in_net(self, keeper):
+        """Record a goalie change so subsequent shots are credited to the right keeper."""
+        self.keeper_in_net = keeper
 
     def halftime(self):
         """ Update information """
@@ -578,31 +641,31 @@ class StatTracker():
             likelihood = self.home_scorers_likelihood
             goals = self.home_goals
             shots = self.home_shots
-            off_recov = self.home_off_recov
             team_name = self.home_team_name
+            # The away team is defending, so their keeper faces this shot
+            keeper_saves = self.away_goalie_saves_by_keeper
+            keeper_allowed = self.away_goalie_goals_allowed_by_keeper
         else:
             scorers = self.away_scorers
             likelihood = self.away_scorers_likelihood
             goals = self.away_goals
             shots = self.away_shots
-            off_recov = self.away_off_recov
             team_name = self.away_team_name
+            keeper_saves = self.home_goalie_saves_by_keeper
+            keeper_allowed = self.home_goalie_goals_allowed_by_keeper
 
         # Who shot the ball
         idx = np.random.choice(np.arange(len(scorers)), p=likelihood)
         shots[idx] += 1
 
-        if prob_stack.pop() < scorers[idx].offense * np.exp(-K * (40-ball_position)): # If shot was taken, was it on goal?
+        if prob_stack.pop() < on_goal_probability(scorers[idx].offense, ball_position): # If shot was taken, was it on goal?
             # Shot taken was on goal
             # Evaluate the result of the shot (weight the offense of the scorer more)
-            if prob_stack.pop() < (0.5*offense_stats["offense"] + 1.25*scorers[idx].offense)/ (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"]):
+            if prob_stack.pop() < goal_probability(offense_stats, defense_stats, scorers[idx].offense):
                 scored = True
                 goals[idx] += 1
-                # Track goal allowed by defending goalie
-                if home_posession:
-                    self.away_goalie_goals_allowed += 1
-                else:
-                    self.home_goalie_goals_allowed += 1
+                # Charge the goal to whichever keeper was actually in net
+                keeper_allowed[self.keeper_in_net] += 1
 
                 # Determine period label for scoring tracker
                 if self.in_overtime:
@@ -615,25 +678,74 @@ class StatTracker():
                 self.scoring_tracker.append(
                     f"{team_name}: {scorers[idx].name} scores with {GameClock.time_to_str(time_left)} in the {period_label}!"
                 )
-            elif prob_stack.pop() < 0.1:
+            elif prob_stack.pop() < OFFENSIVE_REBOUND_CHANCE:
                 off_recovery = True
+                self._credit_rebound(home_posession)
             else:
-                # Shot on goal was saved by the goalie
-                if home_posession:
-                    self.away_goalie_saves += 1
-                else:
-                    self.home_goalie_saves += 1
+                # Shot on goal was saved by whichever keeper was actually in net
+                keeper_saves[self.keeper_in_net] += 1
                 turnover = True
 
-        elif prob_stack.pop() < 0.1:
+        elif prob_stack.pop() < OFFENSIVE_REBOUND_CHANCE:
             off_recovery = True
-            off_recov += 1
+            self._credit_rebound(home_posession)
         else:
             turnover = True
 
         return scored, off_recovery, turnover
+
+    def _credit_rebound(self, home_posession):
+        """Record an offensive rebound against the team that has the ball."""
+        if home_posession:
+            self.home_off_recov += 1
+        else:
+            self.away_off_recov += 1
     
 
 
 def odds_of_taking_shot(yard):
-    return 1 / (1 + np.exp(-0.3 * (yard-34)))
+    """Probability a player shoots rather than passes, given the ball's position."""
+    return _sigmoid(SHOT_SIGMOID_STEEPNESS * (yard - SHOT_SIGMOID_MIDPOINT))
+
+
+def pass_completion(offense, opposing_defense):
+    """
+    Probability a pass is completed rather than turned over.
+
+    `offense / (offense + opposing_defense)` sits at ~0.5 for every realistic matchup,
+    so it is used only as an *edge* around parity and remapped onto a believable band.
+    Because the input is a ratio it is scale-free: if every rating in the league drifts
+    upward over seasons, completion rates -- and therefore scoring -- stay put.
+    """
+    edge = offense / (offense + opposing_defense) - 0.5
+    return _remap(PASS_COMPLETION_BASE, PASS_COMPLETION_GAIN, edge,
+                  PASS_COMPLETION_MIN, PASS_COMPLETION_MAX)
+
+
+def on_goal_probability(shooter_offense, ball_position):
+    """
+    Probability a shot is on goal: distance decay, scaled by the shooter's skill.
+
+    See game_mechanics.txt rule 6. The skill term is a modest multiplier around an
+    average shooter rather than the raw 0-10 rating, which would exceed 1.0 near goal.
+    """
+    skill = float(np.clip(1 + SHOOTER_SKILL_SLOPE * (shooter_offense - SHOOTER_SKILL_REF),
+                          SHOOTER_SKILL_MIN, SHOOTER_SKILL_MAX))
+    return min(0.98, ON_GOAL_MAX * np.exp(-K * (COURT_LENGTH - ball_position)) * skill)
+
+
+def goal_probability(offense_stats, defense_stats, shooter_offense):
+    """
+    Probability a shot on goal beats the keeper.
+
+    The quality ratio weighs the attack (team plus a heavier weight on the shooter)
+    against the defense and the goalie. Like pass completion it is remapped in log-odds
+    space around the league average, so GOAL_CONVERSION_BASE sets how much scoring
+    happens and GOAL_CONVERSION_GAIN sets how much being the better team is worth.
+    """
+    quality = (
+        (GOAL_TEAM_WEIGHT * offense_stats["offense"] + GOAL_SHOOTER_WEIGHT * shooter_offense)
+        / (offense_stats["offense"] + defense_stats["defense"] + defense_stats["goalie"])
+    )
+    return _remap(GOAL_CONVERSION_BASE, GOAL_CONVERSION_GAIN, quality - GOAL_CONVERSION_REF,
+                  0.0, 1.0)

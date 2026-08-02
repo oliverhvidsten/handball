@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { TradeRow, EmptyState, Alert, Button, Toast } from "../ds";
+import { useFreeAgencyState } from "../lib/freeAgency";
 
 interface TeamLite { id: string; name: string; }
 interface TradeT { id: string; from_team_id: string; to_team_id: string; status: string; internal: boolean; }
@@ -14,13 +15,30 @@ interface SeasonState {
   queue_clear: boolean;
   run_status: "idle" | "running" | "done" | "error";
   run_period: number | null;
+  run_kind: "period" | "playoff";
   run_error: string | null;
   run_stale: boolean;
   regular_season_complete: boolean;
+  // Postseason cursor (handball/playoffs.py). One run slot serves both phases, so
+  // run_kind says which one a 'running'/'error' status belongs to.
+  playoffs_started: boolean;
+  playoffs_complete: boolean;
+  playoff_next_round: number | null;
+  playoff_total_rounds: number;
+  champion: string | null;
+  // Season-start readiness (handball/season_readiness.py). The check list is a
+  // registry that can grow, so render whatever the API sends rather than naming
+  // individual checks here.
+  season_ready: boolean;
+  season_blockers: Blocker[];
+  readiness_checks: { name: string; description: string }[];
+  readiness_gates_next_period: boolean;
 }
+interface Blocker { check: string; subject: string; message: string; }
 interface Candidate { legacy_id: string; name: string; age: number; position: string; team_name: string | null; }
 
 export default function Commissioner() {
+  const { fa, refresh: refreshFa } = useFreeAgencyState();
   const [teams, setTeams] = useState<TeamLite[]>([]);
   const [queue, setQueue] = useState<TradeT[]>([]);
   const [season, setSeason] = useState<SeasonState | null>(null);
@@ -78,7 +96,7 @@ export default function Commissioner() {
     try {
       await apiFetch(path, { method: "POST" });
       setToast(ok);
-      await load();
+      await Promise.all([load(), refreshFa()]);
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
     } finally {
@@ -112,9 +130,24 @@ export default function Commissioner() {
   const queueClear = queue.length === 0;
   const scheduled = season?.schedule_generated ?? false;
   const seasonComplete = season != null && season.next_period > season.total_periods;
+  // Readiness blocks starting a season (period 1) only; mid-season it's informational.
+  const blockers = season?.season_blockers ?? [];
+  const readinessBlocked = season?.readiness_gates_next_period ?? false;
   const canRun =
-    scheduled && queueClear && !seasonComplete && busy == null && !activelyRunning && !needsReset;
-  const canAdvance = seasonComplete && queueClear && busy == null && !activelyRunning && !needsReset;
+    scheduled && queueClear && !readinessBlocked && !seasonComplete &&
+    busy == null && !activelyRunning && !needsReset;
+  // The postseason stands between the last period and the rollover: the bracket is
+  // seeded from the final standings, and advancing zeroes them.
+  const playoffsDone = season?.playoffs_complete ?? false;
+  const canAdvance =
+    seasonComplete && playoffsDone && queueClear && busy == null &&
+    !activelyRunning && !needsReset;
+  // A failed run belongs to whichever phase started it; resetting it through the
+  // other phase's endpoint would roll back the wrong thing.
+  const failedRunIsPlayoff = needsReset && season?.run_kind === "playoff";
+  const playoffRunning = activelyRunning && season?.run_kind === "playoff";
+  const periodRunning = activelyRunning && !playoffRunning;
+  const periodNeedsReset = needsReset && !failedRunIsPlayoff;
 
   return (
     <section>
@@ -152,11 +185,11 @@ export default function Commissioner() {
           {seasonComplete && " · regular season complete"}
         </p>
       )}
-      {activelyRunning ? (
+      {periodRunning ? (
         <Alert tone="info" style={{ marginBottom: 12 }}>
           Simulating period {season?.run_period ?? season?.next_period}… this can take a few minutes. Results appear automatically when it finishes — you can leave this tab open.
         </Alert>
-      ) : needsReset ? (
+      ) : periodNeedsReset ? (
         <Alert tone="error" style={{ marginBottom: 12 }}>
           {season?.run_status === "error"
             ? `The last period run failed: ${season?.run_error ?? "unknown error"}.`
@@ -171,9 +204,16 @@ export default function Commissioner() {
         <Alert tone="info" style={{ marginBottom: 12 }}>
           The trade approval queue must be cleared before a period can run.
         </Alert>
+      ) : readinessBlocked ? (
+        <Alert
+          tone="error"
+          title={`Season ${season?.season} can’t start until these are resolved`}
+          items={blockers.map((b) => b.message)}
+          style={{ marginBottom: 12 }}
+        />
       ) : seasonComplete ? (
         <Alert tone="info" style={{ marginBottom: 12 }}>
-          Every regular-season period has been played — see the Offseason section below to advance.
+          Every regular-season period has been played — the Playoffs section below is next.
         </Alert>
       ) : null}
       {!seasonComplete && (
@@ -186,7 +226,7 @@ export default function Commissioner() {
             >
               {busy === "/schedule/generate" ? "Generating…" : "Generate schedule"}
             </Button>
-          ) : needsReset ? (
+          ) : periodNeedsReset ? (
             <Button
               variant="danger"
               disabled={busy != null}
@@ -206,6 +246,71 @@ export default function Commissioner() {
         </div>
       )}
 
+      {/* -- postseason ----------------------------------------------------
+          One round per click. Managers set lineups between rounds, which is the
+          reason the bracket isn't simulated in one go. The bracket itself renders
+          on the Playoffs page; this is only the controls. */}
+      {seasonComplete && (
+        <>
+          <h3 style={{ margin: "28px 0 10px" }}>Playoffs</h3>
+          <p style={{ color: "var(--muted)", marginTop: 0 }}>
+            {season?.playoffs_complete
+              ? `${season.champion} won the ${season.season} championship.`
+              : season?.playoffs_started
+                ? `Round ${season.playoff_next_round} of ${season.playoff_total_rounds} is next — best-of-seven, so this can take several minutes.`
+                : "Seed the bracket from the final standings: four division winners plus the best four remaining in each conference, then best-of-seven rounds."}
+          </p>
+
+          {playoffRunning ? (
+            <Alert tone="info" style={{ marginBottom: 12 }}>
+              Playing round {season?.run_period ?? season?.playoff_next_round}… each matchup is a
+              best-of-seven, so this takes a while. Results appear on the Playoffs page
+              automatically when it finishes — you can leave this tab open.
+            </Alert>
+          ) : failedRunIsPlayoff ? (
+            <Alert tone="error" style={{ marginBottom: 12 }}>
+              {season?.run_status === "error"
+                ? `The last playoff round failed: ${season?.run_error ?? "unknown error"}.`
+                : "The last playoff round was interrupted (the server didn't finish it)."}{" "}
+              Resetting deletes that round's games and undoes its results so it can be run again.
+              Injuries rolled during the round stand.
+            </Alert>
+          ) : !queueClear ? (
+            <Alert tone="info" style={{ marginBottom: 12 }}>
+              The trade approval queue must be cleared before the postseason can proceed.
+            </Alert>
+          ) : null}
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {failedRunIsPlayoff ? (
+              <Button
+                variant="danger"
+                disabled={busy != null}
+                onClick={() => act("/playoffs/reset", "Playoff round reset.")}
+              >
+                {busy === "/playoffs/reset" ? "Resetting…" : "Reset playoff round"}
+              </Button>
+            ) : !season?.playoffs_started ? (
+              <Button
+                variant="primary"
+                disabled={busy != null || activelyRunning || !queueClear}
+                onClick={() => act("/playoffs/start", "Bracket seeded.")}
+              >
+                {busy === "/playoffs/start" ? "Seeding…" : "Seed the bracket"}
+              </Button>
+            ) : !season.playoffs_complete ? (
+              <Button
+                variant="primary"
+                disabled={busy != null || activelyRunning || !queueClear}
+                onClick={() => act("/playoffs/rounds/run", `Round ${season.playoff_next_round} started.`)}
+              >
+                {playoffRunning ? "Playing…" : `Run round ${season.playoff_next_round}`}
+              </Button>
+            ) : null}
+          </div>
+        </>
+      )}
+
       {seasonComplete && (
         <>
           <h3 style={{ margin: "28px 0 10px" }}>Offseason</h3>
@@ -213,6 +318,27 @@ export default function Commissioner() {
             Review potential retirees, then advance to season {season!.season + 1}. Advancing assigns
             awards, seeds the draft order, ages every player, and opens the new season. This can't be undone.
           </p>
+
+          {/* The rollover zeroes the records the bracket was seeded from, so the
+              postseason has to finish first. */}
+          {!playoffsDone && (
+            <Alert tone="info" style={{ marginBottom: 12 }}>
+              Finish the playoffs before advancing — the rollover clears the standings the
+              bracket is seeded from.
+            </Alert>
+          )}
+
+          {/* Advancing is allowed while these are outstanding -- they only block the
+              first period of the NEW season -- but surfacing them now is the point:
+              the offseason is when teams have room to fix them. */}
+          {blockers.length > 0 && (
+            <Alert
+              tone="warning"
+              title={`Outstanding before season ${season!.season + 1} can start`}
+              items={blockers.map((b) => b.message)}
+              style={{ marginBottom: 12 }}
+            />
+          )}
 
           <h4 style={{ margin: "16px 0 8px" }}>Potential retirees ({candidates.length})</h4>
           {candidates.length === 0 ? (
@@ -254,6 +380,69 @@ export default function Commissioner() {
             </Button>
           </div>
         </>
+      )}
+
+      {/* -- free agency ---------------------------------------------------
+          The phase controls only; the per-board actions (force a forfeit, award a
+          deadlock) live on the Free Agents page, where the board is in front of you.
+          One mutually-exclusive chain, like the run controls above. */}
+      <h3 style={{ margin: "28px 0 10px" }}>Free agency</h3>
+      {fa?.period == null ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            No free-agency period is open. Open one after the rollover — teams offer contracts in a
+            sealed round, then contested players go to auction. Season {season?.season} can't start
+            while it's open.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/periods", "Free agency opened.")}>
+            {busy === "/free-agency/periods" ? "Opening…" : "Open free agency"}
+          </Button>
+        </>
+      ) : fa.round?.status === "offers" ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            Round {fa.round.round_number} is taking offers. They stay sealed until you close the
+            round — then sole offers sign, restricted players open match windows, and anyone with
+            two or more offers goes to bidding.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/rounds/close", `Round ${fa.round!.round_number} closed.`)}>
+            {busy === "/free-agency/rounds/close" ? "Closing…" : `Close round ${fa.round.round_number}`}
+          </Button>
+        </>
+      ) : (fa.auctions ?? []).length > 0 ? (
+        <Alert tone="warning" title={`${(fa.auctions ?? []).length} board(s) still live`}
+          items={(fa.auctions ?? []).map((a) =>
+            a.status === "awaiting_award"
+              ? `${a.player_name} — deadlocked, needs your award`
+              : a.status === "matching"
+                ? `${a.player_name} — awaiting a match from ${a.rights_team ?? "the rights holder"}`
+                : `${a.player_name} — on the clock: ${a.turn_team_name ?? "?"}`)}>
+          Award deadlocks and force forfeits on the Free Agents page.
+        </Alert>
+      ) : fa.round && !fa.round.offers_count ? (
+        <>
+          <Alert tone="info" style={{ marginBottom: 12 }}>
+            Round {fa.round.round_number} drew no offers — free agency is done. Everyone still
+            unsigned goes back to the pool at the league minimum.
+          </Alert>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/close", "Free agency closed.")}>
+            {busy === "/free-agency/close" ? "Closing…" : "Close free agency"}
+          </Button>
+        </>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="primary" disabled={busy != null}
+            onClick={() => act("/free-agency/rounds", "Next round opened.")}>
+            Open round {(fa.round?.round_number ?? 0) + 1}
+          </Button>
+          <Button disabled={busy != null}
+            onClick={() => act("/free-agency/close", "Free agency closed.")}>
+            Close free agency
+          </Button>
+        </div>
       )}
 
       {toast && (
