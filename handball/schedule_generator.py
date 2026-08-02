@@ -10,24 +10,16 @@ from typing import Dict, List, Tuple, Optional, Literal
 
 from ortools.sat.python import cp_model
 
+from handball.league_structure import LEAGUE, get_conference, get_division
+
 
 MatchupType = Literal["division_rival", "division_non_rival", "conference", "inter_conference"]
 
 
-league: Dict[str, Dict[str, List[str]]] = {
-    "Eastern": {
-        "Mid-Atlantic": ["Boston", "New York", "Philadelphia", "Washington"],
-        "South": ["Charlotte", "Atlanta", "Miami", "Tampa Bay"],
-        "Midwest": ["Toronto", "Detroit", "Cleveland", "Chicago"],
-        "Country": ["Cincinnati", "Louisville", "Nashville", "Indianapolis"],
-    },
-    "Western": {
-        "North": ["Milwaukee", "Minneapolis", "St. Louis", "Kansas City"],
-        "South": ["Oklahoma City", "New Orleans", "Dallas", "Houston"],
-        "Pacific": ["Phoenix", "Los Angeles", "San Diego", "San Francisco"],
-        "Mountain": ["Las Vegas", "Denver", "Seattle", "Vancouver"],
-    },
-}
+# The league's conference/division map lives in league_structure, which imports
+# nothing heavy -- the postseason needs the same data and must not pull ortools in
+# to get it. Re-exported here (with the historical names) for existing callers.
+league: Dict[str, Dict[str, List[str]]] = LEAGUE
 
 
 # Path where persistent rival assignments are stored. This is league config, NOT
@@ -88,24 +80,6 @@ def load_or_create_rivals(
     with open(path, "w") as f:
         json.dump(rivals, f, indent=2)
     return rivals
-
-
-# Precompute lookup maps for helpers
-_TEAM_TO_CONF: Dict[str, str] = {}
-_TEAM_TO_DIV: Dict[str, str] = {}
-for conf_name, divisions in league.items():
-    for div_name, teams in divisions.items():
-        for t in teams:
-            _TEAM_TO_CONF[t] = conf_name
-            _TEAM_TO_DIV[t] = div_name
-
-
-def get_conference(team: str) -> str:
-    return _TEAM_TO_CONF[team]
-
-
-def get_division(team: str) -> str:
-    return _TEAM_TO_DIV[team]
 
 
 def get_rival(team: str, rivals: Dict[str, str]) -> str:

@@ -30,7 +30,7 @@ if _PG_OK:
 
 _TABLES = ("teams players injuries awards games player_game_lines "
            "draft_picks managers trades trade_assets fa_periods fa_rounds "
-           "fa_auctions fa_offers fa_auction_seats fa_actions")
+           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series")
 
 
 @pytest.fixture(autouse=True)
@@ -568,7 +568,118 @@ def test_reset_rejected_while_genuinely_running(client, two_teams):
     assert "in progress" in r.json()["detail"].lower()
 
 
+# -- postseason endpoints --------------------------------------------------
+def _crown_champion(winner: str = "Boston", loser: str = "Denver", season: int = _SEASON):
+    """A finished bracket, the shortest one that exists: a single decided Final.
+    handball/playoffs reads the champion off the last round's only series, so this is
+    all the postseason state the offseason gate cares about."""
+    with _engine.begin() as c:
+        c.execute(
+            text("insert into playoff_series (season, round, conference, label, "
+                 "high_seed_team_id, low_seed_team_id, high_seed, low_seed, winner_team_id) "
+                 "select :s, 1, null, 'Final', "
+                 "(select id from teams where slug = :w), "
+                 "(select id from teams where slug = :l), 1, 1, "
+                 "(select id from teams where slug = :w)"),
+            {"s": season, "w": winner, "l": loser},
+        )
+
+
+def test_playoff_bracket_is_readable_by_any_manager(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _as_manager("Boston")                        # a plain manager, not commissioner
+    b = client.get("/playoffs/bracket").json()
+    assert b["started"] is False and b["series"] == []
+    assert b["champion"] is None and b["total_rounds"] == 4
+
+    _crown_champion()
+    b = client.get("/playoffs/bracket").json()
+    assert b["started"] and b["complete"] and b["champion"] == "Boston"
+
+
+def test_playoff_actions_are_commissioner_only(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _as_manager("Boston")
+    assert client.post("/playoffs/start").status_code == 403
+    assert client.post("/playoffs/rounds/run").status_code == 403
+    assert client.post("/playoffs/reset").status_code == 403
+
+
+def test_playoffs_start_requires_a_finished_regular_season(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=3 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/start")
+    assert r.status_code == 409
+    assert "regular season" in r.json()["detail"].lower()
+
+
+def test_playoffs_start_reports_an_unseedable_league(client, two_teams):
+    """Two teams cannot fill an 8-per-conference bracket; the seeding rule says so
+    rather than quietly building a two-team postseason."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/start")
+    assert r.status_code == 409
+    assert "8 teams" in r.json()["detail"]
+
+
+def test_running_a_round_needs_a_bracket(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/rounds/run")
+    assert r.status_code == 409 and "seed the bracket" in r.json()["detail"]
+
+
+def test_running_a_round_is_refused_once_complete(client, two_teams):
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    _crown_champion()
+    _as_manager("", role="commissioner")
+    r = client.post("/playoffs/rounds/run")
+    assert r.status_code == 409 and "complete" in r.json()["detail"]
+
+
+def test_period_reset_refuses_a_failed_playoff_round(client, two_teams):
+    """One run slot, two phases: recovering a failed playoff round through the
+    period path would delete a week range of regular-season games."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    sched_repo.set_run_status(_engine, _SEASON, "error", period=1, kind="playoff", error="boom")
+    _as_manager("", role="commissioner")
+    r = client.post("/periods/reset")
+    assert r.status_code == 409 and "/playoffs/reset" in r.json()["detail"]
+
+
+def test_season_state_carries_the_postseason_cursor(client, two_teams):
+    _seed_one_week_schedule()
+    _as_manager("Boston")
+    s = client.get("/season/state").json()
+    assert s["playoffs_started"] is False and s["playoffs_complete"] is False
+    assert s["playoff_total_rounds"] == 4 and s["champion"] is None
+
+    _crown_champion()
+    s = client.get("/season/state").json()
+    assert s["playoffs_started"] and s["playoffs_complete"]
+    assert s["champion"] == "Boston"
+
+
 # -- offseason endpoints ---------------------------------------------------
+def test_advance_requires_a_champion(client, two_teams):
+    """The rollover zeroes the records the bracket was seeded from, so it waits for
+    the postseason to finish."""
+    sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
+    with _engine.begin() as c:
+        c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/season/advance")
+    assert r.status_code == 409
+    assert "champion" in r.json()["detail"].lower()
+
+
 def test_advance_requires_complete_season(client, two_teams):
     # season_state exists but the regular season isn't finished
     sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
@@ -593,6 +704,7 @@ def test_advance_season_happy_path(client, two_teams):
     sched_repo.init_season_state(_engine, _SEASON, schedule_seed=_SEASON, injury_seed=_SEASON)
     with _engine.begin() as c:
         c.execute(text("update season_state set periods_run=5 where season=:s"), {"s": _SEASON})
+    _crown_champion()                            # the postseason is over too
     _as_manager("", role="commissioner")
 
     r = client.post("/season/advance")

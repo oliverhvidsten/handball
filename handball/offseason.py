@@ -152,11 +152,16 @@ def _compute_awards(conn, season: int) -> dict[str, str | None]:
 
 def _top_player(conn, season: int, tail_sql: str):
     """The single players.id leading a season-scoped aggregate, or None when there
-    are no qualifying lines. `tail_sql` supplies any extra WHERE + the group/order."""
+    are no qualifying lines. `tail_sql` supplies any extra WHERE + the group/order.
+
+    REGULAR SEASON only: postseason lines are flagged is_playoff (alembic 0012) and
+    excluded here for the same reason player_season_stats excludes them -- an award
+    is for the season, and counting the playoffs would hand every one of them to
+    whoever went deepest."""
     row = conn.execute(
         text("select pgl.player_id from player_game_lines pgl "
              "join players p on p.id = pgl.player_id "
-             "where pgl.season = :s " + tail_sql + " limit 1"),
+             "where pgl.season = :s and pgl.is_playoff = false " + tail_sql + " limit 1"),
         {"s": season},
     ).first()
     return row[0] if row else None

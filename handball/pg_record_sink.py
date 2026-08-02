@@ -22,23 +22,42 @@ from handball.orchestration import GameResult
 
 
 class PostgresRecordSink:
-    def __init__(self, engine: Engine | None = None, *, season: int = 0):
+    """`is_playoff`/`playoff_round` are set per SINK, not per game: a sink instance
+    already belongs to one run (one season, and now one postseason round), and
+    fixing them at construction means no caller can record a playoff game as a
+    regular-season one by forgetting an argument. The flag lands on the game row AND
+    on every line, so the leaderboard views filter without a join (see alembic 0012)."""
+
+    def __init__(
+        self,
+        engine: Engine | None = None,
+        *,
+        season: int = 0,
+        is_playoff: bool = False,
+        playoff_round: int | None = None,
+    ):
         self.engine = engine or get_engine()
         self.season = season
+        self.is_playoff = is_playoff
+        self.playoff_round = playoff_round
 
-    def record_game(self, result: GameResult, *, week: int | None = None) -> None:
+    def record_game(self, result: GameResult, *, week: int | None = None):
+        """Persist the game + its lines; returns the new games.id (the postseason
+        links it to the series row it decided)."""
         with self.engine.begin() as conn:
             home = self._team_uuid(conn, result.home_id)
             away = self._team_uuid(conn, result.away_id)
             game_id = conn.execute(
                 text(
                     "insert into games (season, week, home_team_id, away_team_id, "
-                    "home_score, away_score, went_to_overtime) "
-                    "values (:season, :week, :home, :away, :hs, :as_, :ot) returning id"
+                    "home_score, away_score, went_to_overtime, is_playoff, playoff_round) "
+                    "values (:season, :week, :home, :away, :hs, :as_, :ot, :po, :rnd) "
+                    "returning id"
                 ),
                 {"season": self.season, "week": week, "home": home, "away": away,
                  "hs": result.home_score, "as_": result.away_score,
-                 "ot": result.went_to_overtime},
+                 "ot": result.went_to_overtime, "po": self.is_playoff,
+                 "rnd": self.playoff_round},
             ).scalar_one()
 
             for legacy_id, line in result.player_lines.items():
@@ -51,14 +70,15 @@ class PostgresRecordSink:
                 conn.execute(
                     text(
                         "insert into player_game_lines (game_id, player_id, team_id, season, "
-                        "goals, shots, saves, goals_allowed, performance) "
-                        "values (:g, :p, :tm, :season, :goals, :shots, :saves, :ga, :perf)"
+                        "goals, shots, saves, goals_allowed, performance, is_playoff) "
+                        "values (:g, :p, :tm, :season, :goals, :shots, :saves, :ga, :perf, :po)"
                     ),
                     {"g": game_id, "p": prow[0], "tm": prow[1], "season": self.season,
                      "goals": line.get("goals", 0), "shots": line.get("shots", 0),
                      "saves": line.get("saves", 0), "ga": line.get("goals_allowed", 0),
-                     "perf": line.get("performance")},
+                     "perf": line.get("performance"), "po": self.is_playoff},
                 )
+        return game_id
 
     @staticmethod
     def _team_uuid(conn, slug: str):

@@ -15,6 +15,10 @@ NHA write API. Endpoints:
     POST /free-agency/offers            manager offers a free agent a contract
     POST /free-agency/rounds/close      commissioner closes the sealed offer round
     POST /free-agency/auctions/{id}/... match / decline / bid / force-forfeit / award
+    GET  /playoffs/bracket              the postseason bracket + champion
+    POST /playoffs/start                commissioner seeds it from the final standings
+    POST /playoffs/rounds/run           commissioner runs the next round (background)
+    POST /playoffs/reset                commissioner rolls back a failed round
 
 Domain rules are reused, not reimplemented: arrangement edits go through
 Team.apply_arrangement (which runs domain.validate), trades through trade_service,
@@ -34,6 +38,7 @@ from sqlalchemy import text
 
 from handball import free_agency as fa
 from handball import offseason
+from handball import playoffs
 from handball import schedule_repository as sched_repo
 from handball import season_readiness
 from handball import signing_service as sign
@@ -493,13 +498,31 @@ def season_state(mgr: Manager = Depends(get_current_manager)):
         "run_status": run_status,
         "run_period": state["run_period"] if state else None,
         "run_error": state["run_error"] if state else None,
+        "run_kind": state["run_kind"] if state else "period",
         "run_stale": _run_stale(state),
         "regular_season_complete": periods_run >= PERIODS,
+        # Postseason cursor. The Commissioner page needs it to know whether the next
+        # action is "seed the bracket", "run round N", or "advance the season".
+        **_playoff_fields(season, periods_run),
         # Season-start readiness (season_readiness.py). Only gates the FIRST period
         # -- once the season is under way these are no longer blockers -- but it is
         # always reported so the page can show what's outstanding during the
         # offseason. The registry can grow; the page renders whatever comes back.
         **_readiness_fields(season, periods_run),
+    }
+
+
+def _playoff_fields(season: int, periods_run: int) -> dict:
+    """The postseason's contribution to /season/state. `playoffs_started` is what
+    the page gates the "seed the bracket" button on; `playoffs_complete` is what
+    gates advancing the season."""
+    data = playoffs.bracket(engine, season)
+    return {
+        "playoffs_started": data["started"],
+        "playoffs_complete": data["complete"],
+        "playoff_next_round": data["next_round"],
+        "playoff_total_rounds": data["total_rounds"],
+        "champion": data["champion"],
     }
 
 
@@ -592,9 +615,11 @@ def _run_period_job(season: int, period: int, injury_seed: int | None) -> None:
         )
         league.run_period(period)
         sched_repo.bump_periods_run(engine, season)
-        sched_repo.set_run_status(engine, season, "done", period=period)
+        sched_repo.set_run_status(engine, season, "done", period=period, kind="period")
     except Exception as e:  # noqa: BLE001 - surface any failure to the operator
-        sched_repo.set_run_status(engine, season, "error", period=period, error=str(e))
+        sched_repo.set_run_status(
+            engine, season, "error", period=period, kind="period", error=str(e)
+        )
     finally:
         stop.set()
 
@@ -638,7 +663,9 @@ def run_period(
 
     # Flip to 'running' synchronously (so a double-click is rejected above), then
     # hand the heavy work to a background task that runs after the response.
-    sched_repo.set_run_status(engine, season, "running", period=next_period, error=None)
+    sched_repo.set_run_status(
+        engine, season, "running", period=next_period, kind="period", error=None
+    )
     background.add_task(_run_period_job, season, next_period, state["injury_seed"])
     return {"season": season, "period": next_period, "run_status": "running"}
 
@@ -647,7 +674,10 @@ def run_period(
 def reset_run(mgr: Manager = Depends(get_current_manager)):
     """Recover an interrupted (stale 'running') or failed ('error') run: roll back
     the partial period's games + record deltas and clear the status so a clean retry
-    is possible. Rejected for a run that is genuinely still in progress."""
+    is possible. Rejected for a run that is genuinely still in progress.
+
+    Only for a REGULAR-SEASON run; a failed playoff round resets through
+    /playoffs/reset, which rolls back a round rather than a week range."""
     _require_commissioner(mgr)
     season = _active_season()
     state = sched_repo.get_season_state(engine, season)
@@ -657,9 +687,136 @@ def reset_run(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(status_code=409, detail="a period is currently in progress")
     if state["run_status"] not in ("running", "error"):
         raise HTTPException(status_code=409, detail="nothing to reset")
+    if state["run_kind"] == "playoff":
+        raise HTTPException(
+            status_code=409,
+            detail="the failed run was a playoff round; reset it with /playoffs/reset",
+        )
 
     rolled = sched_repo.reset_run(engine, season, state["run_period"])
     return {"season": season, "rolled_back_games": rolled, "run_status": "idle"}
+
+
+# -- postseason ------------------------------------------------------------
+@app.get("/playoffs/bracket")
+def playoff_bracket(mgr: Manager = Depends(get_current_manager)):
+    """The season's bracket -- every matchup created so far, its result if played,
+    and the champion once there is one. Readable by any authenticated manager; it is
+    the one document the Playoffs page renders."""
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    data = playoffs.bracket(engine, season)
+    return {
+        **data,
+        "rounds_run": state["playoff_rounds_run"] if state else 0,
+        "regular_season_complete": bool(state and state["periods_run"] >= PERIODS),
+        "run_status": state["run_status"] if state else "idle",
+        "run_kind": state["run_kind"] if state else "period",
+        "run_error": state["run_error"] if state else None,
+        "run_stale": _run_stale(state),
+        "is_commissioner": mgr.is_commissioner,
+    }
+
+
+@app.post("/playoffs/start", status_code=201)
+def start_playoffs(mgr: Manager = Depends(get_current_manager)):
+    """Seed the bracket from the final standings. Commissioner-only; the regular
+    season must be complete and the trade queue clear -- the seeding IS the finished
+    standings, so a pending trade must land before or after it, never during."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if not state or state["periods_run"] < PERIODS:
+        raise HTTPException(status_code=409, detail="finish the regular season first")
+    if state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(status_code=409, detail="a run is already in progress")
+    if not _queue_clear():
+        raise HTTPException(
+            status_code=409,
+            detail="clear the trade approval queue before seeding the bracket",
+        )
+    # The same ranking advance_season seeds the draft from.
+    ranked = build_production_league_pg(year=season).ranked_team_ids()
+    try:
+        return playoffs.start_playoffs(engine, season, ranked)
+    except playoffs.PlayoffError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+def _run_playoff_round_job(season: int, round_num: int, injury_seed: int | None) -> None:
+    """Background worker for one playoff round -- the postseason twin of
+    _run_period_job, sharing the same keep-alive and the same status row."""
+    stop = threading.Event()
+    keepalive = threading.Thread(target=_keepalive_loop, args=(season, stop), daemon=True)
+    keepalive.start()
+    try:
+        playoffs.run_round(engine, season, injury_seed=injury_seed)
+        sched_repo.set_run_status(engine, season, "done", period=round_num, kind="playoff")
+    except Exception as e:  # noqa: BLE001 - surface any failure to the operator
+        sched_repo.set_run_status(
+            engine, season, "error", period=round_num, kind="playoff", error=str(e)
+        )
+    finally:
+        stop.set()
+
+
+@app.post("/playoffs/rounds/run", status_code=202)
+def run_playoff_round(
+    background: BackgroundTasks, mgr: Manager = Depends(get_current_manager)
+):
+    """Simulate the next playoff round in the background and return 202; the page
+    polls /playoffs/bracket for completion. Commissioner-only. Managers may edit
+    lineups between rounds, which is the point of running one round at a time."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if not state:
+        raise HTTPException(status_code=409, detail="no season to run")
+    if state["run_status"] == "running":
+        if _run_stale(state):
+            raise HTTPException(
+                status_code=409,
+                detail="the previous run was interrupted; reset it before running again",
+            )
+        raise HTTPException(status_code=409, detail="a run is already in progress")
+
+    data = playoffs.bracket(engine, season)
+    if not data["started"]:
+        raise HTTPException(status_code=409, detail="seed the bracket first")
+    if data["next_round"] is None:
+        raise HTTPException(status_code=409, detail="the postseason is complete")
+    if not _queue_clear():
+        raise HTTPException(
+            status_code=409,
+            detail="clear the trade approval queue before running a round",
+        )
+
+    round_num = data["next_round"]
+    sched_repo.set_run_status(
+        engine, season, "running", period=round_num, kind="playoff", error=None
+    )
+    background.add_task(
+        _run_playoff_round_job, season, round_num, state["injury_seed"]
+    )
+    return {"season": season, "round": round_num, "run_status": "running"}
+
+
+@app.post("/playoffs/reset")
+def reset_playoff_round(mgr: Manager = Depends(get_current_manager)):
+    """Recover an interrupted or failed playoff round: delete its games, undecide its
+    matchups, and drop any round built off it, so it can be run again. Injuries
+    rolled during the round stand (see handball/playoffs.reset_round)."""
+    _require_commissioner(mgr)
+    season = _active_season()
+    state = sched_repo.get_season_state(engine, season)
+    if state and state["run_status"] == "running" and not _run_stale(state):
+        raise HTTPException(status_code=409, detail="a run is currently in progress")
+    try:
+        result = playoffs.reset_round(engine, season)
+    except playoffs.PlayoffError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    sched_repo.clear_run(engine, season)
+    return {**result, "run_status": "idle"}
 
 
 # -- offseason: retirement + advance season --------------------------------
@@ -683,15 +840,23 @@ def retire(body: RetirementBody, mgr: Manager = Depends(get_current_manager)):
 @app.post("/season/advance")
 def advance_season(mgr: Manager = Depends(get_current_manager)):
     """Offseason rollover to the next season. Commissioner-only; the regular season
-    must be complete and the trade queue clear. Runs synchronously in ONE transaction
-    (no game simulation, so it's quick): assign awards, seed the next draft order from
-    the final standings, age every non-retired player, move expired contracts to free
-    agency, zero records, and open the new season. A failure rolls everything back."""
+    and the postseason must both be finished and the trade queue clear. Runs
+    synchronously in ONE transaction (no game simulation, so it's quick): assign
+    awards, seed the next draft order from the final standings, age every non-retired
+    player, move expired contracts to free agency, zero records, and open the new
+    season. A failure rolls everything back."""
     _require_commissioner(mgr)
     season = _active_season()
     state = sched_repo.get_season_state(engine, season)
     if not state or state["periods_run"] < PERIODS:
         raise HTTPException(status_code=409, detail="finish the regular season first")
+    # The rollover zeroes W-L and reseeds the draft off the final standings, so it
+    # must not run while a bracket still depends on them (the Final seeds itself
+    # from those records).
+    if not playoffs.is_complete(engine, season):
+        raise HTTPException(
+            status_code=409, detail="crown a champion before advancing the season"
+        )
     if not _queue_clear():
         raise HTTPException(
             status_code=409, detail="clear the trade approval queue before advancing"

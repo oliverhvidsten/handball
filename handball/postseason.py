@@ -143,6 +143,36 @@ class Bracket:
 _ROUND_NAMES = {8: "Quarterfinals", 4: "Semifinals", 2: "Conference Final"}
 
 
+# -- the bracket's pure shape ------------------------------------------------
+# Seeding and pairing are just arithmetic on a ranking; the persisted postseason
+# (handball/playoffs.py) needs exactly these and has no repository or game engine
+# to hand a PlayoffService. They live at module scope so both callers share one
+# definition of what the bracket looks like.
+def seed_conferences(
+    ranked_team_ids: list[TeamId],
+    conference_of: Callable[[TeamId], str],
+    teams_per_conference: int = 8,
+) -> dict[str, list[TeamId]]:
+    """{conference: [seed1..seedN]} -- the top teams per conference in best->worst
+    order, taken from the overall ranking."""
+    by_conf: dict[str, list[TeamId]] = {}
+    for tid in ranked_team_ids:
+        by_conf.setdefault(conference_of(tid), []).append(tid)
+    return {c: teams[:teams_per_conference] for c, teams in by_conf.items()}
+
+
+def pairings(seeded: list[TeamId]) -> list[tuple[TeamId, TeamId]]:
+    """Highest vs lowest: [s1,s2,s3,s4] -> [(s1,s4),(s2,s3)]. Higher seed first
+    (hosts)."""
+    n = len(seeded)
+    return [(seeded[i], seeded[n - 1 - i]) for i in range(n // 2)]
+
+
+def round_name(remaining: int) -> str:
+    """What to call a round with `remaining` teams still alive in a conference."""
+    return _ROUND_NAMES.get(remaining, f"Round of {remaining}")
+
+
 class PlayoffService:
     def __init__(
         self,
@@ -157,10 +187,9 @@ class PlayoffService:
     def seed(self, ranked_team_ids: list[TeamId]) -> dict[str, list[TeamId]]:
         """{conference: [seed1..seedN]} -- the top teams per conference in
         best->worst order, taken from the overall ranking."""
-        by_conf: dict[str, list[TeamId]] = {}
-        for tid in ranked_team_ids:
-            by_conf.setdefault(self.conference_of(tid), []).append(tid)
-        return {c: teams[: self.teams_per_conference] for c, teams in by_conf.items()}
+        return seed_conferences(
+            ranked_team_ids, self.conference_of, self.teams_per_conference
+        )
 
     def run(self, repo: TeamRepository, ranked_team_ids: list[TeamId]) -> Bracket:
         """Run single elimination per conference (8->4->2->champion), then a
@@ -174,9 +203,9 @@ class PlayoffService:
         for conference, seeds in seeded.items():
             remaining = list(seeds)
             while len(remaining) > 1:
-                label = f"{conference} {_ROUND_NAMES.get(len(remaining), f'Round of {len(remaining)}')}"
+                label = f"{conference} {round_name(len(remaining))}"
                 winners = []
-                for high, low in self._pairings(remaining):
+                for high, low in pairings(remaining):
                     winner = self._play(teams, high, low)
                     bracket.series.append(SeriesResult(label, high, low, winner))
                     winners.append(winner)
@@ -194,12 +223,7 @@ class PlayoffService:
             bracket.champion = champs[0]
         return bracket
 
-    @staticmethod
-    def _pairings(seeded: list[TeamId]) -> list[tuple[TeamId, TeamId]]:
-        """Highest vs lowest: [s1,s2,s3,s4] -> [(s1,s4),(s2,s3)]. Higher seed
-        first (hosts)."""
-        n = len(seeded)
-        return [(seeded[i], seeded[n - 1 - i]) for i in range(n // 2)]
+    _pairings = staticmethod(pairings)  # retained: tests and callers use it
 
     def _play(self, teams: dict[TeamId, "object"], high: TeamId, low: TeamId) -> TeamId:
         """One elimination game; the higher seed (home) advances on a tie, so

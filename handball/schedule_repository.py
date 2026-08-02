@@ -112,8 +112,9 @@ def get_season_state(engine: Engine, season: int) -> dict | None:
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "select season, periods_run, schedule_seed, injury_seed, "
-                "schedule_generated, run_status, run_period, run_error, "
+                "select season, periods_run, playoff_rounds_run, schedule_seed, "
+                "injury_seed, schedule_generated, run_status, run_period, run_kind, "
+                "run_error, "
                 "extract(epoch from (now() - updated_at))::int as run_age_seconds "
                 "from season_state where season = :s"
             ),
@@ -153,15 +154,22 @@ def set_run_status(
     status: str,
     *,
     period: int | None = None,
+    kind: str | None = None,
     error: str | None = None,
 ) -> None:
-    """Update the background-run state machine (idle/running/done/error). `period`
-    and `error` are set when provided, so a 'running' transition can record the
-    target period and an 'error' transition the message."""
+    """Update the background-run state machine (idle/running/done/error). `period`,
+    `kind` and `error` are set when provided, so a 'running' transition can record
+    what is being run and an 'error' transition the message.
+
+    `kind` is 'period' or 'playoff' -- there is ONE run slot, and what failed in it
+    decides what a reset must roll back (a week range of regular-season games, or a
+    postseason round). Recovering the wrong one would delete real games."""
     sets = ["run_status = :st", "updated_at = now()"]
-    params: dict = {"s": season, "st": status, "p": period, "e": error}
+    params: dict = {"s": season, "st": status, "p": period, "k": kind, "e": error}
     if period is not None:
         sets.append("run_period = :p")
+    if kind is not None:
+        sets.append("run_kind = :k")
     sets.append("run_error = :e")  # always set (cleared to NULL on a fresh run)
     with engine.begin() as conn:
         conn.execute(
@@ -197,6 +205,19 @@ def bump_periods_run(engine: Engine, season: int) -> int:
     return int(row[0])
 
 
+def clear_run(engine: Engine, season: int) -> None:
+    """Return the run slot to idle with no rollback (the postseason resets its own
+    games; see handball/playoffs.reset_round)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "update season_state set run_status = 'idle', run_period = null, "
+                "run_error = null, updated_at = now() where season = :s"
+            ),
+            {"s": season},
+        )
+
+
 def reset_run(engine: Engine, season: int, period: int | None) -> int:
     """Recover from an interrupted/failed period run. Rolls back the partial data of
     `period` so a retry is clean: deletes that period's games (player_game_lines
@@ -216,7 +237,8 @@ def reset_run(engine: Engine, season: int, period: int | None) -> int:
             games = conn.execute(
                 text(
                     "select id, home_team_id, away_team_id, home_score, away_score "
-                    "from games where season = :s and week between :lo and :hi"
+                    "from games where season = :s and week between :lo and :hi "
+                    "and is_playoff = false"
                 ),
                 {"s": season, "lo": lo, "hi": hi},
             ).mappings().all()
@@ -234,7 +256,8 @@ def reset_run(engine: Engine, season: int, period: int | None) -> int:
                     _dec(conn, g["home_team_id"], "ties")
                     _dec(conn, g["away_team_id"], "ties")
             conn.execute(
-                text("delete from games where season = :s and week between :lo and :hi"),
+                text("delete from games where season = :s and week between :lo and :hi "
+                     "and is_playoff = false"),
                 {"s": season, "lo": lo, "hi": hi},
             )
             rolled = len(games)
