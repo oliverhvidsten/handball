@@ -493,15 +493,21 @@ class Team:
             p.current_season_log["goals"].append(0)
             p.current_season_log["shots_taken"].append(0)
 
-    def update_goalie_stats(self, saves: int, goals_allowed: int) -> None:
-        """Both goalies play (halftime swap): split 60% starter / 40% bench."""
-        saves, goals_allowed = int(saves), int(goals_allowed)
-        starter_saves = int(round(saves * 0.6))
-        starter_ga = int(round(goals_allowed * 0.6))
+    def update_goalie_stats(self, saves_by_keeper, goals_allowed_by_keeper) -> None:
+        """
+        Log each keeper's game, as measured.
+
+        Both goalies play -- the backup opens the second half and the starter returns
+        at the BACKUP_GOALIE_MINUTES mark -- and the simulator counts every save and
+        goal against whoever was actually in net at the time. Each argument is a
+        [starter, backup] pair; nothing is apportioned here.
+        """
+        starter_saves, backup_saves = (int(v) for v in saves_by_keeper)
+        starter_ga, backup_ga = (int(v) for v in goals_allowed_by_keeper)
         self.starters["Goalie"][0].current_season_log["saves"].append(starter_saves)
         self.starters["Goalie"][0].current_season_log["goals_allowed"].append(starter_ga)
-        self.bench["Goalie"][0].current_season_log["saves"].append(saves - starter_saves)
-        self.bench["Goalie"][0].current_season_log["goals_allowed"].append(goals_allowed - starter_ga)
+        self.bench["Goalie"][0].current_season_log["saves"].append(backup_saves)
+        self.bench["Goalie"][0].current_season_log["goals_allowed"].append(backup_ga)
 
     # -- the one write path for roster layout ------------------------------
     def apply_arrangement(self, arr: TeamArrangement, rules: RosterRules = DEFAULT_RULES) -> None:

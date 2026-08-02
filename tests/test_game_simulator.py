@@ -6,6 +6,9 @@ Date: 3/1/2026
 """
 import pytest
 import json
+import random
+
+import numpy as np
 
 from handball.game_simulator import GameSimulator, GameClock, StatTracker
 from handball.domain import Player, Team
@@ -63,9 +66,15 @@ def sample_goalie(sample_player):
 
 
 @pytest.fixture
-def sample_team(sample_player, sample_goalie):
+def sample_team(sample_player):
     """Create a sample team for testing"""
     def _make_team(team_name, offense_boost=0, defense_boost=0):
+        # Build this team its own goalie. Sharing one Player across teams would mean
+        # both teams append to the same current_season_log, which silently corrupts
+        # any per-goalie assertion.
+        starting_goalie = sample_player(
+            f"{team_name} Goalie", "Goalie", offense=0.1, defense=0.1, goalie_skill=6.0
+        )
         return Team(
             id=team_name,
             name=team_name,
@@ -86,7 +95,7 @@ def sample_team(sample_player, sample_goalie):
                     sample_player(f"{team_name} Defense 2", "Defense", offense=2.5+offense_boost, defense=5.5+defense_boost),
                     sample_player(f"{team_name} Defense 3", "Defense", offense=3.0+offense_boost, defense=5.0+defense_boost),
                 ],
-                "Goalie": [sample_goalie],
+                "Goalie": [starting_goalie],
             },
             bench={
                 "Forward": [
@@ -138,20 +147,20 @@ class TestGameClock:
         """Test that clock doesn't go negative and raises error"""
         clock = GameClock()
         clock.set_time(10)
-        clock.decrement(5)
+        assert clock.decrement(5) is True
         assert clock.time_left == 5
-        # Decrementing to zero will raise ZeroDivisionError (by design)
-        with pytest.raises(ZeroDivisionError):
-            clock.decrement(10)
-    
-    def test_time_expiration_raises_error(self):
-        """Test that dividing by zero when time expires raises error"""
+        # Running past zero clamps at zero and reports expiry
+        assert clock.decrement(10) is False
+        assert clock.time_left == 0
+
+    def test_time_expiration_reports_expiry(self):
+        """decrement() returns False the moment the clock hits zero"""
         clock = GameClock()
         clock.set_time(10)
-        # Decrementing exactly to zero raises error immediately
-        with pytest.raises(ZeroDivisionError):
-            clock.decrement(10)
-    
+        assert clock.decrement(10) is False
+        assert clock.time_left == 0
+
+
     def test_time_to_str(self):
         """Test time string conversion"""
         assert GameClock.time_to_str(0) == "00:00"
@@ -167,11 +176,10 @@ class TestGameClock:
         assert clock.time_left == 100
 
     def test_decrement_clamps_to_zero(self):
-        """Decrementing past zero clamps to 0 (then raises)."""
+        """Decrementing past zero clamps to 0 and reports expiry."""
         clock = GameClock()
         clock.set_time(3)
-        with pytest.raises(ZeroDivisionError):
-            clock.decrement(100)
+        assert clock.decrement(100) is False
         assert clock.time_left == 0
 
     def test_time_to_str_with_float(self):
@@ -813,6 +821,146 @@ class TestGameSummary:
         summary = game.get_game_summary()
         assert "went_to_overtime" in summary
         assert isinstance(summary["went_to_overtime"], bool)
+
+
+class TestCalibration:
+    """
+    Guards the tuning of the simulation: that games end with believable scores, that
+    the box score internals are physical, and that team ratings decide enough games to
+    matter without deciding all of them.
+
+    The bands are deliberately wide -- they exist to catch a constant being changed by
+    an order of magnitude (as REGULATION_TIME once was), not to pin down sampling
+    noise. Run `python scripts/calibrate_sim.py` for the full picture against the real
+    league, which is where tighter numbers live.
+    """
+
+    GAMES = 120
+
+    @staticmethod
+    def _play_many(make_home, make_away, games, seed=42):
+        np.random.seed(seed)
+        random.seed(seed)
+        results = []
+        for _ in range(games):
+            sim = GameSimulator(make_home(), make_away())
+            sim.simulate_game()
+            results.append(sim)
+        return results
+
+    def test_scores_are_believable(self, sample_team):
+        sims = self._play_many(lambda: sample_team("H"), lambda: sample_team("A"), self.GAMES)
+        scores = np.array([s for sim in sims for s in (sim.home_score, sim.away_score)])
+
+        assert 7 <= scores.mean() <= 16, f"mean goals per team was {scores.mean():.1f}"
+        assert (scores <= 15).mean() >= 0.75, (
+            f"only {(scores <= 15).mean():.0%} of team-scores were 15 or fewer"
+        )
+        assert scores.max() <= 30, f"a team scored {scores.max()}"
+
+    def test_box_score_internals_are_physical(self, sample_team):
+        sims = self._play_many(lambda: sample_team("H"), lambda: sample_team("A"), self.GAMES)
+        turnovers = np.mean([sim.stat_tracker.home_turnovers for sim in sims])
+        attempts = np.mean([sim.stat_tracker.home_shots.sum() for sim in sims])
+
+        # Pass completion is remapped away from the raw ~0.5 ratio precisely so this
+        # does not run to the hundreds of turnovers a coin-flip pass model produces.
+        assert 5 <= turnovers <= 30, f"{turnovers:.0f} passing turnovers per team per game"
+        assert 25 <= attempts <= 55, f"{attempts:.0f} shot attempts per team per game"
+
+    def test_evenly_matched_teams_are_a_coin_flip(self, sample_team):
+        sims = self._play_many(lambda: sample_team("H"), lambda: sample_team("A"), self.GAMES)
+        home_wins = sum(sim.home_score > sim.away_score for sim in sims) / len(sims)
+
+        # No home advantage is modelled, so identical rosters should split the games.
+        assert 0.35 <= home_wins <= 0.65, f"home team won {home_wins:.0%} of even games"
+
+    def test_better_roster_wins_more_but_not_always(self, sample_team):
+        sims = self._play_many(
+            lambda: sample_team("H", offense_boost=1.0, defense_boost=1.0),
+            lambda: sample_team("A"),
+            self.GAMES,
+        )
+        stronger_wins = sum(sim.home_score > sim.away_score for sim in sims) / len(sims)
+
+        # The whole point of the ratings: +1.0 across the roster is a large edge, so it
+        # should show clearly -- but the weaker side still has to win some nights.
+        assert 0.60 <= stronger_wins <= 0.90, (
+            f"the stronger roster won {stronger_wins:.0%} of games"
+        )
+
+    def test_scoring_is_flat_under_league_wide_rating_inflation(self, sample_team):
+        """
+        Ratings drift upward as the league develops. Both remapped probabilities take a
+        ratio as input, so scoring must not drift with them.
+        """
+        def inflated(name, bump):
+            team = sample_team(name)
+            for p in team.roster():
+                p.offense = min(10.0, p.offense + bump)
+                p.defense = min(10.0, p.defense + bump)
+                if p.position == "Goalie":
+                    p.goalie_skill = min(10.0, p.goalie_skill + bump)
+            return team
+
+        means = []
+        for bump in (0.0, 2.0):
+            sims = self._play_many(
+                lambda: inflated("H", bump), lambda: inflated("A", bump), 60
+            )
+            means.append(np.mean([s for sim in sims for s in (sim.home_score, sim.away_score)]))
+
+        assert abs(means[0] - means[1]) <= 3.0, (
+            f"scoring moved from {means[0]:.1f} to {means[1]:.1f} when every rating rose by 2"
+        )
+
+    def test_both_goalies_see_action(self, sample_team):
+        """
+        The backup opens the second half and the starter returns at the
+        BACKUP_GOALIE_MINUTES mark, so both keepers should accumulate a workload.
+        """
+        np.random.seed(42)
+        random.seed(42)
+        home = sample_team("H")
+        sim = GameSimulator(home, sample_team("A"))
+        sim.simulate_game()
+
+        starter_log = home.starters["Goalie"][0].current_season_log
+        backup_log = home.bench["Goalie"][0].current_season_log
+        starter_work = starter_log["saves"][-1] + starter_log["goals_allowed"][-1]
+        backup_work = backup_log["saves"][-1] + backup_log["goals_allowed"][-1]
+
+        assert backup_work > 0, "the backup goalie was credited with no work at all"
+        assert starter_work > backup_work, "the starter should carry the larger share"
+
+    def test_goalie_credit_is_measured_not_apportioned(self, sample_team):
+        """
+        Each keeper's line must be exactly the shots they personally faced -- not the
+        team total split by a minutes schedule. Checked over several games because a
+        single game could coincidentally match a proportional split.
+        """
+        np.random.seed(7)
+        random.seed(7)
+        for _ in range(10):
+            home = sample_team("H")
+            away = sample_team("A")
+            sim = GameSimulator(home, away)
+            sim.simulate_game()
+            tracker = sim.stat_tracker
+
+            for team, saves, allowed in (
+                (home, tracker.home_goalie_saves_by_keeper, tracker.home_goalie_goals_allowed_by_keeper),
+                (away, tracker.away_goalie_saves_by_keeper, tracker.away_goalie_goals_allowed_by_keeper),
+            ):
+                starter_log = team.starters["Goalie"][0].current_season_log
+                backup_log = team.bench["Goalie"][0].current_season_log
+                assert [starter_log["saves"][-1], backup_log["saves"][-1]] == list(saves)
+                assert [starter_log["goals_allowed"][-1], backup_log["goals_allowed"][-1]] == list(allowed)
+
+            # Every goal conceded is charged to exactly one keeper, so the two lines
+            # must still reconcile with the final score.
+            assert tracker.home_goalie_goals_allowed == sim.away_score
+            assert tracker.away_goalie_goals_allowed == sim.home_score
 
 
 if __name__ == "__main__":
