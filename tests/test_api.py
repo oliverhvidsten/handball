@@ -568,6 +568,77 @@ def test_reset_rejected_while_genuinely_running(client, two_teams):
     assert "in progress" in r.json()["detail"].lower()
 
 
+# -- standings endpoint ----------------------------------------------------
+def test_standings_ranks_by_points(client, two_teams):
+    """Denver finishes on more POINTS despite fewer wins -- the key that also seeds
+    the bracket. Any authenticated manager may read the table."""
+    with _engine.begin() as c:
+        c.execute(text("update teams set wins=30, losses=20, ties=5 where slug='Boston'"))
+        c.execute(text("update teams set wins=29, losses=15, ties=11 where slug='Denver'"))
+    _as_manager("Boston")
+
+    rows = client.get("/standings").json()["teams"]
+    assert [r["slug"] for r in rows] == ["Denver", "Boston"]
+    assert [r["points"] for r in rows] == [29 * 3 + 11, 30 * 3 + 5]
+    assert [r["rank"] for r in rows] == [1, 2]
+
+
+def test_standings_carries_conference_and_division(client, two_teams):
+    _as_manager("Boston")
+    rows = {r["slug"]: r for r in client.get("/standings").json()["teams"]}
+    assert (rows["Boston"]["conference"], rows["Boston"]["division"]) == ("Eastern", "Mid-Atlantic")
+    assert rows["Denver"]["conference"] == "Western"
+    # Each leads its division, and playoff_seed is a PROJECTION -- where the team
+    # would be seeded if the season ended now, over whatever field exists (seeding
+    # the real bracket still demands a full eight per conference).
+    assert rows["Boston"]["division_leader"] and rows["Denver"]["division_leader"]
+    assert rows["Boston"]["playoff_seed"] == 1 and rows["Denver"]["playoff_seed"] == 1
+
+
+def test_standings_head_to_head_outranks_goal_difference(client, two_teams):
+    """Level on points: Boston took the season series 2-1 but was blown out in the
+    one it lost, so its goal difference is far worse. Head-to-head comes first."""
+    with _engine.begin() as c:
+        c.execute(text("update teams set wins=10, losses=5, ties=0"))
+        ids = dict(c.execute(text("select slug, id from teams")).all())
+        for week, (home, away, hs, as_) in enumerate((
+            ("Boston", "Denver", 1, 0),
+            ("Boston", "Denver", 1, 0),
+            ("Denver", "Boston", 10, 0),
+        ), start=1):
+            c.execute(
+                text("insert into games (season, week, home_team_id, away_team_id, "
+                     "home_score, away_score, is_playoff) "
+                     "values (:s, :w, :h, :a, :hs, :as_, false)"),
+                {"s": _SEASON, "w": week, "h": ids[home], "a": ids[away],
+                 "hs": hs, "as_": as_},
+            )
+    _as_manager("Boston")
+
+    rows = client.get("/standings").json()["teams"]
+    assert [r["slug"] for r in rows] == ["Boston", "Denver"]
+    assert rows[0]["goal_diff"] == -8 and rows[1]["goal_diff"] == 8   # GD says Denver
+
+
+def test_standings_counts_only_regular_season_goals(client, two_teams):
+    """Goal difference is a tiebreaker, so a playoff blowout must not feed it."""
+    with _engine.begin() as c:
+        ids = dict(c.execute(text("select slug, id from teams")).all())
+        for is_playoff, hs, as_ in ((False, 3, 1), (True, 40, 0)):
+            c.execute(
+                text("insert into games (season, week, home_team_id, away_team_id, "
+                     "home_score, away_score, is_playoff) "
+                     "values (:s, :w, :h, :a, :hs, :as_, :p)"),
+                {"s": _SEASON, "w": None if is_playoff else 1, "h": ids["Boston"],
+                 "a": ids["Denver"], "hs": hs, "as_": as_, "p": is_playoff},
+            )
+    _as_manager("Boston")
+
+    rows = {r["slug"]: r for r in client.get("/standings").json()["teams"]}
+    assert (rows["Boston"]["goals_for"], rows["Boston"]["goals_against"]) == (3, 1)
+    assert rows["Boston"]["goal_diff"] == 2      # not 42
+
+
 # -- postseason endpoints --------------------------------------------------
 def _crown_champion(winner: str = "Boston", loser: str = "Denver", season: int = _SEASON):
     """A finished bracket, the shortest one that exists: a single decided Final.

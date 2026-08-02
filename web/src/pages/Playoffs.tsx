@@ -4,7 +4,16 @@ import { ApiError, apiFetch } from "../lib/api";
 import { Alert, EmptyState } from "../ds";
 import { abbrev } from "../hooks";
 
-/** One matchup. Scores are null until it has been played. */
+export interface SeriesGame {
+  game: number;
+  home: string;
+  away: string;
+  home_score: number;
+  away_score: number;
+  went_to_overtime: boolean;
+}
+
+/** One best-of-seven matchup. `games` is empty until it has been played. */
 export interface Series {
   round: number;
   conference: string | null;
@@ -13,9 +22,10 @@ export interface Series {
   low: { slug: string; name: string; seed: number };
   winner: string | null;
   played: boolean;
-  high_score: number | null;
-  low_score: number | null;
-  went_to_overtime: boolean;
+  high_wins: number;
+  low_wins: number;
+  wins_needed: number;
+  games: SeriesGame[];
 }
 
 export interface Bracket {
@@ -71,7 +81,7 @@ export default function Playoffs() {
           message={
             bracket.regular_season_complete
               ? "The regular season is over — the commissioner seeds the bracket from the final standings."
-              : "The top eight teams in each conference make the playoffs. The bracket is seeded once the regular season finishes."
+              : "Eight teams per conference — the four division winners plus the best four remaining — meet in best-of-seven rounds. The bracket is seeded once the regular season finishes."
           }
         />
       </section>
@@ -84,7 +94,8 @@ export default function Playoffs() {
     <section>
       <h2 style={{ marginBottom: 4 }}>Playoffs</h2>
       <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        Season {bracket.season} · single elimination · higher seed hosts and advances on a tie
+        Season {bracket.season} · best-of-seven every round · division winners take the top
+        seeds, and the higher seed hosts games 1, 2, 5, 6 and 7
       </p>
 
       {bracket.champion && <ChampionBanner name={bracket.champion} season={bracket.season} />}
@@ -170,26 +181,42 @@ function Round({ series, onPick }: { series: Series[]; onPick: (slug: string) =>
 }
 
 function SeriesCard({ series, onPick }: { series: Series; onPick: (slug: string) => void }) {
+  const over = series.winner != null;
   return (
     <div style={{
       background: "var(--surface-card)", border: "1px solid var(--line)",
       borderRadius: "var(--radius-md)", overflow: "hidden",
     }}>
       <Side
-        team={series.high} score={series.high_score} won={series.winner === series.high.slug}
-        decided={series.played} onPick={onPick}
+        team={series.high} score={series.high_wins} won={series.winner === series.high.slug}
+        decided={over} onPick={onPick}
       />
       <div style={{ height: 1, background: "var(--line)" }} />
       <Side
-        team={series.low} score={series.low_score} won={series.winner === series.low.slug}
-        decided={series.played} onPick={onPick}
+        team={series.low} score={series.low_wins} won={series.winner === series.low.slug}
+        decided={over} onPick={onPick}
       />
-      {series.went_to_overtime && (
+      {series.games.length > 0 && (
         <div style={{
-          padding: "4px 12px", fontSize: "var(--text-xs)", color: "var(--muted)",
-          background: "var(--surface-2)", textAlign: "right",
+          display: "flex", flexWrap: "wrap", gap: 8, padding: "6px 12px",
+          fontSize: "var(--text-xs)", color: "var(--muted)",
+          background: "var(--surface-2)",
         }}>
-          OT
+          {/* Game-by-game, each shown from the HIGHER SEED's side so the column
+              reads consistently down the card. */}
+          {series.games.map((g) => {
+            const highIsHome = g.home === series.high.slug;
+            const hs = highIsHome ? g.home_score : g.away_score;
+            const ls = highIsHome ? g.away_score : g.home_score;
+            return (
+              <span key={g.game} title={`Game ${g.game} at ${g.home}`}>
+                <span style={{ opacity: 0.6 }}>G{g.game}</span>{" "}
+                <span style={{ fontVariantNumeric: "tabular-nums" }}>{hs}–{ls}</span>
+                {g.went_to_overtime && <span style={{ opacity: 0.6 }}> ot</span>}
+              </span>
+            );
+          })}
+          {!over && <span style={{ opacity: 0.6 }}>· best of {series.wins_needed * 2 - 1}</span>}
         </div>
       )}
     </div>
@@ -205,7 +232,7 @@ function Side({
   decided: boolean;
   onPick: (slug: string) => void;
 }) {
-  // Before a game is played neither side is dimmed; after it, the loser is.
+  // Before the series is decided neither side is dimmed; after it, the loser is.
   const loser = decided && !won;
   return (
     <div

@@ -14,7 +14,7 @@ from sqlalchemy import text
 from handball import playoffs
 from handball.db import get_engine, is_local_db
 from handball.domain import Player, Team
-from handball.league_structure import get_conference
+from handball.league_structure import division_key, get_conference
 from handball.orchestration import SimpleGameEngine
 from handball.pg_repository import PostgresTeamRepository
 
@@ -33,11 +33,21 @@ _TABLES = ("teams players injuries awards games player_game_lines draft_picks ma
            "trades trade_assets playoff_series season_state schedule_games")
 _SEASON = 2027
 
-# Eight per conference, taken from league_structure so get_conference resolves them.
-_EAST = ["Boston", "New York", "Philadelphia", "Washington",
-         "Charlotte", "Atlanta", "Miami", "Tampa Bay"]
-_WEST = ["Milwaukee", "Minneapolis", "St. Louis", "Kansas City",
-         "Oklahoma City", "New Orleans", "Dallas", "Houston"]
+# Eight per conference, taken from league_structure so get_conference/division_key
+# resolve them -- TWO from each of the conference's four divisions, so the seeding
+# really has four division winners to promote and four wildcards to rank.
+_EAST = ["Boston", "New York",          # Mid-Atlantic
+         "Charlotte", "Atlanta",        # South
+         "Toronto", "Detroit",          # Midwest
+         "Cincinnati", "Louisville"]    # Country
+_WEST = ["Milwaukee", "Minneapolis",    # North
+         "Oklahoma City", "New Orleans",  # South
+         "Phoenix", "Los Angeles",      # Pacific
+         "Las Vegas", "Denver"]         # Mountain
+
+# The four East division winners, given the ranking the `ranked` fixture builds.
+_EAST_WINNERS = ["Boston", "Charlotte", "Toronto", "Cincinnati"]
+_EAST_WILDCARDS = ["New York", "Atlanta", "Detroit", "Louisville"]
 
 
 @pytest.fixture(autouse=True)
@@ -139,6 +149,43 @@ def test_start_seeds_one_v_eight(ranked):
         assert get_conference(s["low"]["slug"]) == s["conference"]
 
 
+def test_division_winners_take_the_top_four_seeds(ranked):
+    """Four divisions per conference, so seeds 1-4 are the division winners and 5-8
+    the best of the rest -- each division is represented, and one bad division can't
+    send four teams."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+
+    seeds = {}
+    for s in _series(1):
+        if s["conference"] != "Eastern":
+            continue
+        seeds[s["high"]["seed"]] = s["high"]["slug"]
+        seeds[s["low"]["seed"]] = s["low"]["slug"]
+
+    assert [seeds[i] for i in (1, 2, 3, 4)] == _EAST_WINNERS
+    assert sorted(seeds[i] for i in (5, 6, 7, 8)) == sorted(_EAST_WILDCARDS)
+    # one seeded team per division, per conference, among the top four
+    assert len({division_key(seeds[i]) for i in (1, 2, 3, 4)}) == 4
+
+
+def test_a_division_winner_can_be_seeded_above_a_stronger_wildcard(ranked):
+    """Toronto wins the Midwest and takes the 3 seed despite Atlanta finishing ahead
+    of it; Atlanta is the 6 seed. That is the point of division-based seeding -- and
+    it means the 3 seed can genuinely be the underdog."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+
+    three_six = [s for s in _series(1)
+                 if s["conference"] == "Eastern" and s["high"]["seed"] == 3][0]
+    assert three_six["high"]["slug"] == "Toronto"     # division winner, hosts
+    assert three_six["low"]["slug"] == "Atlanta"      # finished ahead, seeded below
+    assert ranked.index("Atlanta") < ranked.index("Toronto")
+
+    _run()
+    decided = [s for s in _series(1)
+               if s["conference"] == "Eastern" and s["high"]["seed"] == 3][0]
+    assert decided["winner"] == "Atlanta"             # ...and the underdog host loses
+
+
 def test_start_refuses_a_second_bracket(ranked):
     playoffs.start_playoffs(_engine, _SEASON, ranked)
     with pytest.raises(playoffs.PlayoffError, match="already exists"):
@@ -151,18 +198,38 @@ def test_start_refuses_a_short_conference(ranked):
 
 
 # -- running -----------------------------------------------------------------
-def test_round_one_advances_favourites_and_reseeds(ranked):
+def test_round_one_reseeds_the_survivors(ranked):
     playoffs.start_playoffs(_engine, _SEASON, ranked)
     result = _run()
 
     assert result["round"] == 1 and result["games"] == 8
-    # The stronger team is the higher seed in every matchup, so all four favourites
-    # survive and the next round re-seeds them 1v4, 2v3.
-    assert [s["winner"] for s in _series(1)] == [s["high"]["slug"] for s in _series(1)]
     east2 = [s for s in _series(2) if s["conference"] == "Eastern"]
-    assert [(s["high"]["seed"], s["low"]["seed"]) for s in east2] == [(1, 4), (2, 3)]
+    assert len(east2) == 2
     assert east2[0]["label"] == "Eastern Semifinals"
+    # Survivors are re-paired best-vs-worst on their ORIGINAL seeds: the best
+    # surviving seed draws the worst, whatever those numbers turned out to be.
+    east1 = [s for s in _series(1) if s["conference"] == "Eastern"]
+    survivors = sorted(
+        (s["high"]["seed"] if s["winner"] == s["high"]["slug"] else s["low"]["seed"])
+        for s in east1
+    )
+    assert [(s["high"]["seed"], s["low"]["seed"]) for s in east2] == [
+        (survivors[0], survivors[3]), (survivors[1], survivors[2])
+    ]
     assert playoffs.bracket(_engine, _SEASON)["next_round"] == 2
+
+
+def test_an_upset_survivor_keeps_its_original_seed(ranked):
+    """A 6 seed that knocks out the 3 is still the 6 in the next round -- re-seeding
+    rewards the regular season, it doesn't reset it."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    _run()
+
+    east2 = [s for s in _series(2) if s["conference"] == "Eastern"]
+    atlanta = [s for s in east2 if "Atlanta" in (s["high"]["slug"], s["low"]["slug"])][0]
+    seed = (atlanta["high"]["seed"] if atlanta["high"]["slug"] == "Atlanta"
+            else atlanta["low"]["seed"])
+    assert seed == 6
 
 
 def test_bracket_runs_to_a_champion(ranked):
@@ -173,10 +240,13 @@ def test_bracket_runs_to_a_champion(ranked):
     data = playoffs.bracket(_engine, _SEASON)
     assert data["complete"] and data["next_round"] is None
     assert data["champion"] == ranked[0]          # the best team, undefeated
-    assert len(data["series"]) == 15              # 8 + 4 + 2 + 1
-    assert _count(f"select count(*) from games where season = {_SEASON}") == 15
+    assert len(data["series"]) == 15               # 8 + 4 + 2 + 1
+    # SimpleGameEngine is deterministic, so the stronger side sweeps every series:
+    # 15 series x 4 games. Every game is a playoff game.
+    assert _count(f"select count(*) from games where season = {_SEASON}") == 60
     assert _count(
-        f"select count(*) from games where season = {_SEASON} and is_playoff") == 15
+        f"select count(*) from games where season = {_SEASON} and is_playoff") == 60
+    assert all(s["high_wins"] + s["low_wins"] == 4 for s in data["series"])
     # Rounds are tagged, and no playoff game claims a fixture-list week.
     assert _count(
         f"select count(*) from games where season = {_SEASON} and week is not null") == 0
@@ -188,6 +258,87 @@ def test_bracket_runs_to_a_champion(ranked):
     # The Final is hosted by the better regular-season record, not the conference.
     assert final[0]["high"]["slug"] == ranked[0]
     assert final[0]["low"]["slug"] == ranked[1]
+
+
+# -- best-of-seven -----------------------------------------------------------
+def test_a_round_is_a_best_of_seven(ranked):
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    result = _run()
+
+    assert result["round"] == 1 and result["games"] == 8   # eight SERIES, not games
+    for s in _series(1):
+        assert s["wins_needed"] == 4
+        assert max(s["high_wins"], s["low_wins"]) == 4     # somebody reached four
+        assert min(s["high_wins"], s["low_wins"]) < 4      # ...and only one of them
+        winner_wins = s["high_wins"] if s["winner"] == s["high"]["slug"] else s["low_wins"]
+        assert winner_wins == 4
+
+
+def test_a_series_stops_the_moment_it_is_won(ranked):
+    """No dead rubbers: a 4-0 series is four games, not seven."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    _run()
+
+    for s in _series(1):
+        assert len(s["games"]) == s["high_wins"] + s["low_wins"]
+        assert len(s["games"]) <= 7
+    assert _count(f"select count(*) from games where season = {_SEASON}") == 32  # 8 x 4
+
+
+def test_the_higher_seed_hosts_games_one_two_five_six_seven(ranked):
+    """2-2-1-1-1. The pattern is ceremony today -- the simulator gives the home side
+    no advantage -- but the games must still be recorded on the right side."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    _run()
+
+    s = _series(1)[0]
+    high, low = s["high"]["slug"], s["low"]["slug"]
+    hosts = {g["game"]: g["home"] for g in s["games"]}
+    expected = {1: high, 2: high, 3: low, 4: low, 5: high, 6: high, 7: high}
+    assert hosts == {n: expected[n] for n in hosts}
+    # ...and the visitor is always the other team.
+    assert all({g["home"], g["away"]} == {high, low} for g in s["games"])
+
+
+def test_series_games_are_numbered_and_linked(ranked):
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    _run()
+
+    s = _series(1)[0]
+    assert [g["game"] for g in s["games"]] == list(range(1, len(s["games"]) + 1))
+    # every playoff game is attached to a series, none orphaned
+    assert _count(
+        f"select count(*) from games where season = {_SEASON} and is_playoff "
+        "and playoff_series_id is null") == 0
+
+
+def test_an_interrupted_series_resumes_where_it_stopped(ranked):
+    """A round is not one transaction. If a worker dies mid-series, re-running the
+    round must finish that series from its stored score rather than replaying it."""
+    playoffs.start_playoffs(_engine, _SEASON, ranked)
+    target = _series(1)[0]
+
+    # Simulate a run that died after three games of one series: 2-1, no winner.
+    with _engine.begin() as c:
+        sid = c.execute(
+            text("select id from playoff_series where season = :s and round = 1 "
+                 "and high_seed = :hs and conference = :c"),
+            {"s": _SEASON, "hs": target["high"]["seed"], "c": target["conference"]},
+        ).scalar_one()
+        c.execute(
+            text("update playoff_series set high_wins = 2, low_wins = 1 where id = :i"),
+            {"i": sid},
+        )
+
+    _run()
+
+    resumed = [s for s in _series(1)
+               if s["high"]["slug"] == target["high"]["slug"]][0]
+    # Started from 2-1, so the stronger side needed only two more wins: 4-1, and only
+    # the two resumed games were actually played and recorded.
+    assert (resumed["high_wins"], resumed["low_wins"]) == (4, 1)
+    assert len(resumed["games"]) == 2
+    assert resumed["winner"] == target["high"]["slug"]
 
 
 def test_running_a_finished_postseason_is_refused(ranked):
@@ -307,7 +458,7 @@ def test_reset_round_undoes_it(ranked):
 
     result = playoffs.reset_round(_engine, _SEASON, 2)
 
-    assert result["games_deleted"] == 4          # round 2's games (round 3 was unplayed)
+    assert result["games_deleted"] == 16         # 4 series x 4 games (round 3 unplayed)
     assert _series(3) == []                      # rounds built off it are gone
     assert all(s["winner"] is None for s in _series(2))
     assert all(s["winner"] for s in _series(1))  # round 1 stands

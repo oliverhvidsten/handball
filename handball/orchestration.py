@@ -214,10 +214,23 @@ class SeasonOrchestrator:
         return result
 
     def standings(self) -> list[tuple[TeamId, tuple[int, int, int]]]:
-        """Current league table from the repo, sorted by wins desc then losses
-        asc. Includes every team (unplayed teams show 0-0-0)."""
+        """Current league table from the repo, best -> worst by POINTS (3 for a win,
+        1 for a tie). Includes every team (unplayed teams show 0-0-0).
+
+        Ties fall through to fewest losses and then team id: the full rule
+        (head-to-head, goal difference -- handball/standings.py) needs the season's
+        game log, which a TeamRepository does not carry. The Postgres wiring injects
+        that rule as LeagueOperations' `ranker`; this is the offline stack's answer,
+        agreeing on the part it can compute."""
+        from handball.standings import TeamStanding
+
         teams = self.team_repo.load_all()
-        return sorted(((t.id, t.record) for t in teams), key=lambda x: (-x[1][0], x[1][1]))
+        return sorted(
+            ((t.id, t.record) for t in teams),
+            key=lambda x: (
+                -TeamStanding(x[0], *x[1]).points, x[1][1], str(x[0])
+            ),
+        )
 
     def run_period(self, matchups: list[tuple[TeamId, TeamId]]) -> list[GameResult]:
         """One period: first pull every team's manager lineup edits, then play

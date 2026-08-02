@@ -15,6 +15,7 @@ NHA write API. Endpoints:
     POST /free-agency/offers            manager offers a free agent a contract
     POST /free-agency/rounds/close      commissioner closes the sealed offer round
     POST /free-agency/auctions/{id}/... match / decline / bid / force-forfeit / award
+    GET  /standings                     the league table, ranked (points/H2H/GD)
     GET  /playoffs/bracket              the postseason bracket + champion
     POST /playoffs/start                commissioner seeds it from the final standings
     POST /playoffs/rounds/run           commissioner runs the next round (background)
@@ -37,11 +38,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from handball import free_agency as fa
+from handball import league_structure
 from handball import offseason
 from handball import playoffs
+from handball import postseason
 from handball import schedule_repository as sched_repo
 from handball import season_readiness
 from handball import signing_service as sign
+from handball import simulation_vars
+from handball import standings
 from handball import trade_service as ts
 from handball.db import get_engine
 from handball.domain import ArrangementError
@@ -695,6 +700,72 @@ def reset_run(mgr: Manager = Depends(get_current_manager)):
 
     rolled = sched_repo.reset_run(engine, season, state["run_period"])
     return {"season": season, "rolled_back_games": rolled, "run_status": "idle"}
+
+
+# -- standings -------------------------------------------------------------
+@app.get("/standings")
+def standings_table(mgr: Manager = Depends(get_current_manager)):
+    """The league table, ranked by the one rule (handball/standings.py): points, then
+    head-to-head, then goal difference. Served from the API rather than read straight
+    from Supabase because head-to-head cannot be expressed as an ORDER BY -- and a
+    table that sorted differently from the bracket it seeds would be worse than no
+    table at all.
+
+    Each row carries its conference, division, whether it currently leads that
+    division, and the playoff seed it would take if the season ended now."""
+    season = _active_season()
+    table = standings.load_league_table(engine, season)
+    ranked = table.ranked()
+    rows = table.by_id()
+
+    with engine.connect() as conn:
+        names = dict(conn.execute(text("select slug, name from teams")).all())
+
+    # Teams outside the configured league map (fixtures, a part-built league) still
+    # get a row -- they just can't be placed in a conference or a bracket.
+    known = [t for t in ranked if t in league_structure.all_teams()]
+    seeded = postseason.seed_conferences(
+        known, league_structure.get_conference,
+        simulation_vars.PLAYOFF_TEAMS_PER_CONFERENCE, league_structure.division_key,
+    )
+    seed_of = {t: i + 1 for teams in seeded.values() for i, t in enumerate(teams)}
+    leaders, led = set(), set()           # `known` is ranked, so first seen leads
+    for t in known:
+        division = league_structure.division_key(t)
+        if division not in led:
+            led.add(division)
+            leaders.add(t)
+
+    return {
+        "season": season,
+        "teams": [
+            {
+                "rank": i + 1,
+                "slug": slug,
+                "name": names.get(slug, slug),
+                "wins": rows[slug].wins,
+                "losses": rows[slug].losses,
+                "ties": rows[slug].ties,
+                "points": rows[slug].points,
+                "goals_for": rows[slug].goals_for,
+                "goals_against": rows[slug].goals_against,
+                "goal_diff": rows[slug].goal_diff,
+                "conference": _safe(league_structure.get_conference, slug),
+                "division": _safe(league_structure.get_division, slug),
+                "division_leader": slug in leaders,
+                "playoff_seed": seed_of.get(slug),
+            }
+            for i, slug in enumerate(ranked)
+        ],
+    }
+
+
+def _safe(fn, team: str):
+    """Conference/division for a team that may not be in the league map."""
+    try:
+        return fn(team)
+    except KeyError:
+        return None
 
 
 # -- postseason ------------------------------------------------------------

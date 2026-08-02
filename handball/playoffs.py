@@ -11,10 +11,13 @@ Description: The persisted postseason -- the bracket the website runs, over the
     SEEDING and PAIRING are imported from there (one definition of the bracket's
     shape) and everything else -- persistence, cadence, recovery -- lives here.
 
-    Format: ONE GAME decides each matchup, the higher seed hosts, and a tie goes to
-    the host (so there is always a winner regardless of the engine's tie policy).
-    8 teams per conference: quarterfinals -> semifinals -> conference final, then a
-    cross-conference Final. 15 games in all.
+    Format: every round is a BEST-OF-SEVEN -- first to 4 wins, the higher seed
+    hosting games 1, 2, 5, 6 and 7. 8 teams per conference: quarterfinals ->
+    semifinals -> conference final, then a cross-conference Final. Up to 105 games,
+    typically nearer 90.
+
+    Seeding is division-aware: each conference's division winners take the top seeds
+    and the best remaining teams fill the rest (see postseason.seed_conferences).
 
     Cadence: one ROUND per commissioner action, run as a background job like a
     regular-season period. Each round's matchups are materialized from the previous
@@ -42,13 +45,21 @@ import random
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from handball.league_structure import CONFERENCES, get_conference
+from handball.league_structure import CONFERENCES, division_key, get_conference
 from handball.league_views import TeamId
 from handball.postseason import pairings, round_name, seed_conferences
 from handball.season import PERIODS
+from handball.simulation_vars import (
+    PLAYOFF_SERIES_WINS_NEEDED,
+    PLAYOFF_TEAMS_PER_CONFERENCE,
+)
 
-TEAMS_PER_CONFERENCE = 8
+TEAMS_PER_CONFERENCE = PLAYOFF_TEAMS_PER_CONFERENCE
+WINS_NEEDED = PLAYOFF_SERIES_WINS_NEEDED
 FINAL_LABEL = "Final"
+
+# 2-2-1-1-1 by game number: True where the HIGHER SEED hosts.
+_HOME_PATTERN = (True, True, False, False, True, True, True)
 
 
 class PlayoffError(RuntimeError):
@@ -86,26 +97,47 @@ def _label(round_num: int, conference: str | None, teams_per_conference: int) ->
 def bracket(engine: Engine, season: int, *,
             teams_per_conference: int = TEAMS_PER_CONFERENCE) -> dict:
     """The whole bracket for `season`, ready to render: every series created so far
-    (played or not), plus the champion once there is one. Series are ordered by
-    round, then conference, then seed, which is reading order for a bracket."""
+    (played, in progress, or not started), each with its game-by-game scores, plus
+    the champion once there is one. Series are ordered by round, then conference,
+    then seed, which is reading order for a bracket."""
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "select ps.round, ps.conference, ps.label, ps.high_seed, ps.low_seed, "
+                "select ps.id, ps.round, ps.conference, ps.label, "
+                "       ps.high_seed, ps.low_seed, ps.high_wins, ps.low_wins, "
                 "       hi.slug as high_slug, hi.name as high_name, "
                 "       lo.slug as low_slug, lo.name as low_name, "
-                "       w.slug  as winner_slug, "
-                "       g.id as game_id, g.home_score, g.away_score, g.went_to_overtime "
+                "       w.slug  as winner_slug "
                 "from playoff_series ps "
                 "join teams hi on hi.id = ps.high_seed_team_id "
                 "join teams lo on lo.id = ps.low_seed_team_id "
                 "left join teams w on w.id = ps.winner_team_id "
-                "left join games g on g.id = ps.game_id "
                 "where ps.season = :s "
                 "order by ps.round, ps.conference nulls last, ps.high_seed"
             ),
             {"s": season},
         ).mappings().all()
+        games = conn.execute(
+            text("select g.playoff_series_id as series_id, g.series_game, "
+                 "       th.slug as home, ta.slug as away, "
+                 "       g.home_score, g.away_score, g.went_to_overtime "
+                 "from games g "
+                 "join teams th on th.id = g.home_team_id "
+                 "join teams ta on ta.id = g.away_team_id "
+                 "where g.season = :s and g.is_playoff = true "
+                 "and g.playoff_series_id is not null "
+                 "order by g.series_game"),
+            {"s": season},
+        ).mappings().all()
+
+    by_series: dict = {}
+    for g in games:
+        by_series.setdefault(g["series_id"], []).append({
+            "game": g["series_game"],
+            "home": g["home"], "away": g["away"],
+            "home_score": g["home_score"], "away_score": g["away_score"],
+            "went_to_overtime": g["went_to_overtime"],
+        })
 
     series = [
         {
@@ -115,11 +147,11 @@ def bracket(engine: Engine, season: int, *,
             "high": {"slug": r["high_slug"], "name": r["high_name"], "seed": r["high_seed"]},
             "low": {"slug": r["low_slug"], "name": r["low_name"], "seed": r["low_seed"]},
             "winner": r["winner_slug"],
-            "played": r["game_id"] is not None,
-            "game_id": str(r["game_id"]) if r["game_id"] else None,
-            "high_score": r["home_score"],
-            "low_score": r["away_score"],
-            "went_to_overtime": r["went_to_overtime"],
+            "high_wins": r["high_wins"],
+            "low_wins": r["low_wins"],
+            "wins_needed": WINS_NEEDED,
+            "played": r["high_wins"] + r["low_wins"] > 0,
+            "games": by_series.get(r["id"], []),
         }
         for r in rows
     ]
@@ -171,15 +203,20 @@ def start_playoffs(
     ranked_team_ids: list[TeamId],
     *,
     conference_of=None,
+    division_of=None,
     teams_per_conference: int = TEAMS_PER_CONFERENCE,
 ) -> dict:
     """Seed the bracket from the finished regular season and create round 1.
     `ranked_team_ids` is best->worst -- the SAME ranking advance_season seeds the
     draft from, so the two can never disagree about who finished where.
 
+    Each conference's four division winners take seeds 1-4 and the best four
+    remaining teams take 5-8; see postseason.seed_conferences.
+
     Refuses if a bracket already exists for the season: re-seeding a live postseason
     would silently rewrite matchups managers have already seen."""
     conference_of = conference_of or get_conference
+    division_of = division_of or division_key
     conference_rounds(teams_per_conference)  # validates the field size
 
     with engine.begin() as conn:
@@ -188,7 +225,9 @@ def start_playoffs(
         ).first():
             raise PlayoffError(f"the season {season} bracket already exists")
 
-        seeded = seed_conferences(ranked_team_ids, conference_of, teams_per_conference)
+        seeded = seed_conferences(
+            ranked_team_ids, conference_of, teams_per_conference, division_of
+        )
         short = {c: len(t) for c, t in seeded.items() if len(t) != teams_per_conference}
         if short:
             raise PlayoffError(
@@ -246,15 +285,16 @@ def run_round(
     roll_injuries: bool = True,
     teams_per_conference: int = TEAMS_PER_CONFERENCE,
 ) -> dict:
-    """Play every undecided matchup in the next round, record the games, advance the
-    winners, and materialize the round after it. Returns a summary.
+    """Play out every undecided matchup in the next round as a best-of-seven, record
+    every game, advance the winners, and materialize the round after it.
 
-    Not run in one transaction: each game is a real simulation of minutes, and a
-    failure halfway through should keep the games it already played rather than
-    throwing away an hour of compute. What makes that safe is that a partially-run
-    round is a legible state -- some series decided, some not -- and re-running the
-    round simply picks up the undecided ones. reset_round is there for the operator
-    who wants the round wiped instead."""
+    Not run in one transaction: a round is up to 56 games of real simulation, and a
+    failure partway should keep what it has rather than throwing away an hour of
+    compute. Every game is committed with the series score it produced, so a
+    re-run resumes an interrupted series at 2-1 rather than replaying it. A
+    half-finished round is a legible state -- some series decided, some mid-series,
+    some untouched -- and running the round again simply finishes it. reset_round is
+    there for the operator who wants it wiped instead."""
     from handball.orchestration import GameSimulatorAdapter, SeasonOrchestrator
     from handball.pg_record_sink import PostgresRecordSink
     from handball.pg_repository import PostgresTeamRepository
@@ -273,20 +313,7 @@ def run_round(
 
     played, participants = [], []
     for s in _pending_series(engine, season, round_num):
-        # Fresh copies: engine.play mutates records, and these are never saved.
-        home = repo.load(s["high_slug"])
-        away = repo.load(s["low_slug"])
-        result = game_engine.play(home, away)
-        game_id = sink.record_game(result)  # week stays NULL -- not a fixture-list game
-        winner = (
-            s["high_slug"] if result.home_score >= result.away_score else s["low_slug"]
-        )
-        _decide(engine, s["id"], winner=winner, game_id=game_id)
-        played.append({
-            "label": s["label"], "high": s["high_slug"], "low": s["low_slug"],
-            "high_score": result.home_score, "low_score": result.away_score,
-            "winner": winner,
-        })
+        played.append(_play_series(engine, s, repo, game_engine, sink))
         participants += [s["high_slug"], s["low_slug"]]
 
     if roll_injuries and participants:
@@ -342,6 +369,7 @@ def _pending_series(engine: Engine, season: int, round_num: int) -> list[dict]:
         rows = conn.execute(
             text(
                 "select ps.id, ps.label, ps.conference, ps.high_seed, ps.low_seed, "
+                "       ps.high_wins, ps.low_wins, "
                 "       hi.slug as high_slug, lo.slug as low_slug "
                 "from playoff_series ps "
                 "join teams hi on hi.id = ps.high_seed_team_id "
@@ -354,15 +382,89 @@ def _pending_series(engine: Engine, season: int, round_num: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _decide(engine: Engine, series_id, *, winner: str, game_id) -> None:
+def _play_series(engine: Engine, s: dict, repo, game_engine, sink) -> dict:
+    """One best-of-seven: play games until a team reaches WINS_NEEDED, then record the
+    winner. Resumes from the series score already on the row, so an interrupted round
+    picks a series up where it stopped.
+
+    Teams are loaded fresh for EVERY game, so a lineup edit between rounds takes
+    effect -- and so the record mutations engine.play makes on its copies are thrown
+    away rather than accumulating across a series."""
+    high, low = s["high_slug"], s["low_slug"]
+    high_wins, low_wins = s["high_wins"], s["low_wins"]
+    games = []
+
+    while high_wins < WINS_NEEDED and low_wins < WINS_NEEDED:
+        game_num = high_wins + low_wins + 1
+        home, away = (high, low) if _high_seed_hosts(game_num) else (low, high)
+        result = game_engine.play(repo.load(home), repo.load(away))
+
+        # A drawn game goes to the HIGHER SEED, the same rule the single-game format
+        # used -- it guarantees the series terminates whatever the engine's tie
+        # policy. Production never reaches it: allow_tie=False sends a level game to
+        # sudden-death overtime.
+        if result.home_score > result.away_score:
+            winner = home
+        elif result.away_score > result.home_score:
+            winner = away
+        else:
+            winner = high
+
+        if winner == high:
+            high_wins += 1
+        else:
+            low_wins += 1
+
+        _record_series_game(
+            engine, sink, s["id"], result,
+            game_num=game_num, high_wins=high_wins, low_wins=low_wins,
+            decided=high if high_wins >= WINS_NEEDED
+            else low if low_wins >= WINS_NEEDED else None,
+        )
+        games.append({
+            "game": game_num, "home": home, "away": away,
+            "home_score": result.home_score, "away_score": result.away_score,
+            "winner": winner,
+        })
+
+    return {
+        "label": s["label"], "high": high, "low": low,
+        "high_wins": high_wins, "low_wins": low_wins,
+        "winner": high if high_wins >= WINS_NEEDED else low,
+        "games": games,
+    }
+
+
+def _high_seed_hosts(game_num: int) -> bool:
+    """2-2-1-1-1: the higher seed hosts games 1, 2, 5, 6, 7.
+
+    Worth knowing that this is currently ceremony -- handball/game_simulator.py gives
+    the home side no advantage at all (the opening possession is a fair coin flip, and
+    so is overtime's). It decides which team is recorded as home, and nothing else."""
+    return _HOME_PATTERN[(game_num - 1) % len(_HOME_PATTERN)]
+
+
+def _record_series_game(
+    engine: Engine, sink, series_id, result, *,
+    game_num: int, high_wins: int, low_wins: int, decided: str | None,
+) -> None:
+    """Persist one game AND the series score it produced. The score has to be stored
+    per game rather than counted at the end -- it is what lets an interrupted run
+    resume mid-series."""
+    game_id = sink.record_game(result)   # week stays NULL -- not a fixture-list game
     with engine.begin() as conn:
         conn.execute(
-            text(
-                "update playoff_series set "
-                "winner_team_id = (select id from teams where slug = :w), game_id = :g "
-                "where id = :id"
-            ),
-            {"w": winner, "g": game_id, "id": series_id},
+            text("update games set playoff_series_id = :sid, series_game = :n "
+                 "where id = :gid"),
+            {"sid": series_id, "n": game_num, "gid": game_id},
+        )
+        conn.execute(
+            text("update playoff_series set high_wins = :hw, low_wins = :lw, "
+                 "winner_team_id = case when cast(:w as text) is null "
+                 "  then winner_team_id "
+                 "  else (select id from teams where slug = :w) end "
+                 "where id = :id"),
+            {"hw": high_wins, "lw": low_wins, "w": decided, "id": series_id},
         )
 
 
@@ -405,7 +507,7 @@ def _materialize_next_round(
         if round_num < conf_rounds:
             rows = _next_conference_round(won, round_num + 1, teams_per_conference)
         else:
-            rows = _final_row(conn, won)
+            rows = _final_row(conn, won, season)
         _insert_series(conn, season, round_num + 1, rows)
     return len(rows)
 
@@ -435,23 +537,22 @@ def _next_conference_round(
     return rows
 
 
-def _final_row(conn, won: list) -> list[dict]:
+def _final_row(conn, won: list, season: int) -> list[dict]:
     """The Final: the conference champions, hosted by the better regular season.
 
-    Both are usually 1-seeds, so the conference seed cannot break the tie; the
-    W-L-T on `teams` can, and it is still the finished regular season's record --
-    nothing in the postseason writes to it, and advance_season (which zeroes it) is
-    gated on a champion existing. Ordering matches league.ranked_team_ids()."""
-    champs = [r["winner"] for r in won]
+    Both are usually 1-seeds, so the conference seed cannot break the tie. The
+    league table can, and it is still the finished regular season's -- nothing in the
+    postseason writes to `teams`, playoff games are excluded from the goal totals,
+    and advance_season (which zeroes the records) is gated on a champion existing.
+
+    Ranked by the one rule in handball/standings.py, so the Final's host is decided
+    the same way every other placing this season was."""
+    from handball.standings import read_league_table
+
+    champs = set(r["winner"] for r in won)
     if len(champs) < 2:
         return []
-    ranked = [
-        slug for (slug,) in conn.execute(
-            text("select slug from teams where slug = any(:slugs) "
-                 "order by wins desc, losses asc, slug"),
-            {"slugs": champs},
-        ).all()
-    ]
+    ranked = [t for t in read_league_table(conn, season).ranked() if t in champs]
     seed_of = {r["winner"]: r["seed"] for r in won}
     high, low = ranked[0], ranked[1]
     return [{
@@ -493,7 +594,8 @@ def reset_round(engine: Engine, season: int, round_num: int | None = None) -> di
             {"s": season, "r": round_num},
         )
         conn.execute(
-            text("update playoff_series set winner_team_id = null, game_id = null "
+            text("update playoff_series set winner_team_id = null, "
+                 "high_wins = 0, low_wins = 0 "
                  "where season = :s and round = :r"),
             {"s": season, "r": round_num},
         )

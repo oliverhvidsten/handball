@@ -55,6 +55,15 @@ def get_division(team: str) -> str:
     return _TEAM_TO_DIV[team]
 
 
+def division_key(team: str) -> str:
+    """A division id that is unique LEAGUE-wide: "Eastern/South".
+
+    Division names are not unique on their own -- both conferences have a "South" --
+    so anything that groups by division across the league (the playoff seeding picks
+    one winner per division) must key on this, never on get_division() alone."""
+    return f"{_TEAM_TO_CONF[team]}/{_TEAM_TO_DIV[team]}"
+
+
 def all_teams() -> list[str]:
     """Every configured team id, in conference/division order."""
     return list(_TEAM_TO_CONF)

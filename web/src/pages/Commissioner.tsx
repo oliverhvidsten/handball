@@ -257,14 +257,15 @@ export default function Commissioner() {
             {season?.playoffs_complete
               ? `${season.champion} won the ${season.season} championship.`
               : season?.playoffs_started
-                ? `Round ${season.playoff_next_round} of ${season.playoff_total_rounds} is next — top eight per conference, single elimination.`
-                : "Seed the bracket from the final standings: the top eight teams in each conference, single elimination."}
+                ? `Round ${season.playoff_next_round} of ${season.playoff_total_rounds} is next — best-of-seven, so this can take several minutes.`
+                : "Seed the bracket from the final standings: four division winners plus the best four remaining in each conference, then best-of-seven rounds."}
           </p>
 
           {playoffRunning ? (
             <Alert tone="info" style={{ marginBottom: 12 }}>
-              Playing round {season?.run_period ?? season?.playoff_next_round}… results appear on the
-              Playoffs page automatically when it finishes.
+              Playing round {season?.run_period ?? season?.playoff_next_round}… each matchup is a
+              best-of-seven, so this takes a while. Results appear on the Playoffs page
+              automatically when it finishes — you can leave this tab open.
             </Alert>
           ) : failedRunIsPlayoff ? (
             <Alert tone="error" style={{ marginBottom: 12 }}>

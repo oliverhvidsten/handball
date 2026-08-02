@@ -73,6 +73,20 @@ INJURY_DECLINE_MULTIPLIER = 1.3      # older players: multiply decline_rate
 MAX_DECLINE_RATE = 0.5               # cap on decline_rate
 
 
+# League table. Points decide the standings, the playoff seeding, and (reversed) the
+# draft order -- see handball/standings.py for the full tiebreak chain.
+POINTS_PER_WIN = 3
+POINTS_PER_TIE = 1
+
+# Playoffs: each conference sends its division winners (seeds 1..N) plus the best
+# remaining teams, to fill this many seeds.
+PLAYOFF_TEAMS_PER_CONFERENCE = 8
+
+# Every playoff round is a best-of-seven: first to 4 wins, up to 7 games. The higher
+# seed hosts games 1, 2, 5, 6 and 7 (the 2-2-1-1-1 pattern in handball/playoffs.py).
+PLAYOFF_SERIES_WINS_NEEDED = 4
+
+
 # Offseason rollover ("advance season").
 RETIREMENT_CANDIDATE_AGE = 35   # players older than this are offered to the commissioner
                                 # as retirement candidates (the commissioner decides).

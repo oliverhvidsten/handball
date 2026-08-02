@@ -152,13 +152,44 @@ def seed_conferences(
     ranked_team_ids: list[TeamId],
     conference_of: Callable[[TeamId], str],
     teams_per_conference: int = 8,
+    division_of: Callable[[TeamId], str] | None = None,
 ) -> dict[str, list[TeamId]]:
-    """{conference: [seed1..seedN]} -- the top teams per conference in best->worst
-    order, taken from the overall ranking."""
+    """{conference: [seed1..seedN]} -- each conference's playoff field, seeded.
+
+    DIVISION WINNERS FIRST. The best team in each division takes a top seed, in
+    order of the overall ranking among themselves; the rest of the field is the best
+    remaining teams in that conference. So a division winner is seeded above a
+    wildcard that finished ahead of it -- winning a division is worth something, and
+    that is the whole point of having divisions.
+
+    With four divisions per conference and eight seeds, that is seeds 1-4 for the
+    winners and 5-8 for the wildcards. The split follows from the numbers rather
+    than being hardcoded: however many divisions a conference has, its winners take
+    that many top seeds.
+
+    `division_of` is optional -- without it this degrades to pure ranking order,
+    which is what the offline stack (with no division map) wants."""
     by_conf: dict[str, list[TeamId]] = {}
     for tid in ranked_team_ids:
         by_conf.setdefault(conference_of(tid), []).append(tid)
-    return {c: teams[:teams_per_conference] for c, teams in by_conf.items()}
+
+    seeded: dict[str, list[TeamId]] = {}
+    for conference, teams in by_conf.items():
+        if division_of is None:
+            seeded[conference] = teams[:teams_per_conference]
+            continue
+        # `teams` is already best->worst, so the first team seen in a division is
+        # that division's winner and the winners come out in ranking order.
+        winners, seen = [], set()
+        for tid in teams:
+            division = division_of(tid)
+            if division not in seen:
+                seen.add(division)
+                winners.append(tid)
+        field_ = winners[:teams_per_conference]
+        others = [t for t in teams if t not in set(field_)]
+        seeded[conference] = field_ + others[: teams_per_conference - len(field_)]
+    return seeded
 
 
 def pairings(seeded: list[TeamId]) -> list[tuple[TeamId, TeamId]]:
@@ -179,16 +210,19 @@ class PlayoffService:
         engine: GameEngine,
         conference_of: Callable[[TeamId], str],
         teams_per_conference: int = 8,
+        division_of: Callable[[TeamId], str] | None = None,
     ) -> None:
         self.engine = engine
         self.conference_of = conference_of
         self.teams_per_conference = teams_per_conference
+        self.division_of = division_of
 
     def seed(self, ranked_team_ids: list[TeamId]) -> dict[str, list[TeamId]]:
         """{conference: [seed1..seedN]} -- the top teams per conference in
         best->worst order, taken from the overall ranking."""
         return seed_conferences(
-            ranked_team_ids, self.conference_of, self.teams_per_conference
+            ranked_team_ids, self.conference_of, self.teams_per_conference,
+            self.division_of,
         )
 
     def run(self, repo: TeamRepository, ranked_team_ids: list[TeamId]) -> Bracket:

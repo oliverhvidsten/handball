@@ -63,6 +63,7 @@ class LeagueOperations:
         conference_of: Callable[[TeamId], str] | None = None,
         teams_per_conference: int = PLAYOFF_TEAMS_PER_CONFERENCE,
         rules: RosterRules = DEFAULT_RULES,
+        ranker: Callable[[], list[TeamId]] | None = None,
     ) -> None:
         self.orch = orchestrator
         self.schedule = schedule
@@ -73,6 +74,7 @@ class LeagueOperations:
         self._playoff_engine = playoff_engine or orchestrator.engine
         self._conference_of = conference_of  # resolved lazily (avoids ortools import offline)
         self.teams_per_conference = teams_per_conference
+        self._ranker = ranker
 
     # -- schedule ----------------------------------------------------------
     def set_schedule(self, schedule: Schedule) -> None:
@@ -109,9 +111,15 @@ class LeagueOperations:
         return self.orch.standings()
 
     def ranked_team_ids(self) -> list[TeamId]:
-        """Best -> worst, the order draft (reversed) and playoff seeding use.
-        Derived from the orchestrator's W-L-T standings; richer goal-differential
-        tiebreakers can be layered on via the record sink later."""
+        """Best -> worst: the order the draft (reversed) and the playoff seeding use.
+
+        Production injects `ranker` (handball/standings.py: points, then head-to-head,
+        then goal difference) -- the full rule needs the season's game log, which the
+        orchestrator's repository does not expose. Without one, this falls back to the
+        orchestrator's own standings, which apply the same POINTS key to the records
+        it does have."""
+        if self._ranker is not None:
+            return self._ranker()
         return [tid for tid, _ in self.orch.standings()]
 
     # -- postseason --------------------------------------------------------
@@ -167,6 +175,7 @@ def build_production_league_pg(
     managers edit lineups/trades through the website/API, so the batch sim needs
     no inbox. `db_url` overrides $HANDBALL_DB_URL; `year` tags the season the
     record sink writes."""
+    from handball import standings
     from handball.db import get_engine
     from handball.orchestration import GameSimulatorAdapter
     from handball.pg_record_sink import PostgresRecordSink
@@ -180,7 +189,12 @@ def build_production_league_pg(
         record_sink=PostgresRecordSink(engine, season=year),
     )
     injuries = InjurySimulator(rng=random.Random(seed), year=year)
-    return LeagueOperations(orch, schedule=schedule, injuries=injuries)
+    return LeagueOperations(
+        orch, schedule=schedule, injuries=injuries,
+        # The real ranking: points, head-to-head, goal difference. Needs the game
+        # log, so only the Postgres wiring can supply it.
+        ranker=lambda: standings.ranked_team_ids(engine, year),
+    )
 
 
 def build_production_league_from_cred(  # pragma: no cover - live wiring
