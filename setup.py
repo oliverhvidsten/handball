@@ -20,6 +20,9 @@ setup(
             # [crypto] pulls in `cryptography`, required to verify Supabase's
             # ES256 (asymmetric) JWTs. Without it every authed request 401s.
             "pyjwt[crypto]>=2.8",
+            # POST /draft/prospects accepts a multipart file upload (api/draft.py);
+            # FastAPI needs this to parse the form, else that branch 400s.
+            "python-multipart>=0.0.9",
         ],
     },
 )
