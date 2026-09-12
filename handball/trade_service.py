@@ -29,6 +29,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from handball.db import get_engine
+from handball.extensions import trade_deadline_passed
 from handball.league_views import DEFAULT_RULES, RosterRules
 from handball.roster_layout import RosterLayoutError, rebuild_layout
 from handball.salary_cap import ContractError, assert_trade_hard_cap
@@ -36,6 +37,18 @@ from handball.salary_cap import ContractError, assert_trade_hard_cap
 
 class TradeError(RuntimeError):
     pass
+
+
+def _assert_before_deadline(engine: Engine) -> None:
+    """The trade deadline: once TRADE_DEADLINE_AFTER_PERIOD periods of the active
+    season have run, no trade may be PROPOSED or ACCEPTED until /season/advance opens
+    the next league year. An already-accepted trade may still be approved -- period 5
+    already requires a clear commissioner queue, so the alternative is a trade both
+    teams agreed to before the deadline dying because nobody clicked in time. The
+    calendar itself lives in handball/extensions.py, which reads the same season_state
+    row for the extension window."""
+    if trade_deadline_passed(engine):
+        raise TradeError("the trade deadline has passed")
 
 
 # --------------------------------------------------------------------------
@@ -64,6 +77,7 @@ def propose_trade(
     `internal` (both teams owned by the proposer): the trade skips counterparty
     acceptance and is created already 'accepted', but -- like every trade -- only
     commits once the commissioner approves it."""
+    _assert_before_deadline(engine)
     with engine.begin() as conn:
         from_id = _team_uuid(conn, from_team)
         to_id = _team_uuid(conn, to_team)
@@ -95,6 +109,7 @@ def propose_trade(
 
 
 def accept_trade(engine: Engine, trade_id: str) -> None:
+    _assert_before_deadline(engine)
     _transition(engine, trade_id, frm=("proposed",), to="accepted")
 
 

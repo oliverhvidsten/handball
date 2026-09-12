@@ -85,6 +85,11 @@ class ContractRow:
     years_remaining: int
     rookie_contract: bool
     restricted_free_agent: bool
+    # A signed extension (players.ext_term, alembic 0016). An extended player's deal
+    # runs out at the next rollover like anyone else's, but they are NOT released by
+    # it -- offseason._apply_extensions puts them on the new contract first. Carried
+    # here so the counts below stay honest about who actually leaves.
+    extended: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,7 +144,8 @@ class BulkPlan:
     `expiring_next_rollover` is the number this whole tool exists for: how many
     rostered players would be released by the next /season/advance if the plan is
     applied. Aging decrements the counter and THEN releases everyone at or below
-    zero, so it counts `years_remaining <= 1`."""
+    zero, so it counts `years_remaining <= 1` -- minus anyone holding a signed
+    extension, who is put on a new contract by the same rollover."""
     changes: tuple[ContractChange, ...] = ()
     payrolls: tuple[TeamPayrollChange, ...] = ()
     expiry_cohorts: dict[int, int] = field(default_factory=dict)
@@ -161,10 +167,11 @@ class BulkPlan:
 
 
 # -- planning (pure) ---------------------------------------------------------
-def _expiring(years_remaining: int) -> bool:
+def _expiring(years_remaining: int, extended: bool = False) -> bool:
     """Whether the next rollover releases a player on this counter: aging ticks it
-    down one, then `<= 0` is released."""
-    return years_remaining <= 1
+    down one, then `<= 0` is released -- UNLESS the player has signed an extension,
+    which the rollover applies before free agency ever sees them."""
+    return years_remaining <= 1 and not extended
 
 
 def plan_bulk_contracts(
@@ -285,8 +292,8 @@ def plan_bulk_contracts(
             continue                        # only a rostered player can be released
         y = years_after.get(row.player_id, row.years_remaining)
         cohorts[y] += 1
-        expiring += _expiring(y)
-        expiring_before += _expiring(row.years_remaining)
+        expiring += _expiring(y, row.extended)
+        expiring_before += _expiring(row.years_remaining, row.extended)
 
     return BulkPlan(
         changes=tuple(changes),
@@ -303,7 +310,7 @@ def plan_bulk_contracts(
 _ROW_SQL = (
     "select p.legacy_id, p.name, t.id::text as team_id, t.name as team_name, "
     "p.contract_term, p.contract_value, p.years_remaining, p.rookie_contract, "
-    "p.restricted_free_agent "
+    "p.restricted_free_agent, (p.ext_term is not null) as extended "
     "from players p left join teams t on t.id = p.team_id "
     "where p.retired = false order by t.name nulls last, p.name"
 )
@@ -322,6 +329,7 @@ def load_contracts(conn) -> list[ContractRow]:
             years_remaining=int(r["years_remaining"]),
             rookie_contract=bool(r["rookie_contract"]),
             restricted_free_agent=bool(r["restricted_free_agent"]),
+            extended=bool(r["extended"]),
         )
         for r in conn.execute(text(_ROW_SQL)).mappings().all()
     ]
