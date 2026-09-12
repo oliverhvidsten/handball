@@ -33,10 +33,15 @@ from handball.simulation_vars import DRAFT_ROUNDS, RETIREMENT_CANDIDATE_AGE
 
 # Award labels (plain text, written straight to awards.award; the frontend reads
 # (season, award) directly -- see PlayerDetail.tsx).
-AWARD_MVP = "League MVP"
+#
+# These two are STAT TITLES: facts about the finished season, computed from the
+# leaderboard and not open to opinion. The MVP and Rookie of the Year used to be
+# computed here as well and are now VOTED (simulation_vars.AWARDS, handball/
+# voting.py) -- "most valuable" was never a number, and reading it off total
+# performance quietly handed it to whoever played the most minutes.
 AWARD_TOP_SCORER = "Top Scorer"
 AWARD_TOP_GOALIE = "Top Goalie"
-AWARD_ROOKIE = "Rookie of the Year"
+STAT_AWARDS = (AWARD_TOP_SCORER, AWARD_TOP_GOALIE)
 
 
 # -- retirement (commissioner-curated; separate from the atomic rollover) ----
@@ -89,7 +94,7 @@ def retire_players(engine: Engine, legacy_ids: list[str], season: int) -> int:
 # -- the rollover (atomic) ---------------------------------------------------
 def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> dict:
     """Roll the league from `season` to `season + 1` in a single transaction:
-    assign awards, seed next season's draft order (from the pre-reset standings in
+    assign the stat titles, seed next season's draft order (from the pre-reset standings in
     `ranked_team_ids`, best->worst), extend the 10-year future-pick placeholder
     window by one year, age every non-retired player, turn signed extensions into
     contracts, move expired contracts to free agency, zero team records, and open the
@@ -127,22 +132,25 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
 
 # -- awards ------------------------------------------------------------------
 def _compute_awards(conn, season: int) -> dict[str, str | None]:
-    """Assign the four season awards from the finished season's stat lines. Idempotent
-    within the season (clears it first). Returns {award_label: legacy_id|None}."""
-    conn.execute(text("delete from awards where season = :s"), {"s": season})
+    """Assign the season's STAT TITLES from the finished season's stat lines.
+    Idempotent within the season (clears its own rows first). Returns
+    {award_label: legacy_id|None}.
+
+    It clears only the awards it owns. `awards` also holds the VOTED awards, which
+    the commissioner tallied before this rollover was allowed to run (see
+    voting.assert_awards_tallied, enforced on /season/advance) -- deleting the whole
+    season would throw away a vote that can never be re-counted, because the very
+    next steps here zero the standings and stats it was cast against."""
+    conn.execute(
+        text("delete from awards where season = :s and award = any(:labels)"),
+        {"s": season, "labels": list(STAT_AWARDS)},
+    )
     winners = {
-        AWARD_MVP: _top_player(
-            conn, season,
-            "group by pgl.player_id order by sum(pgl.performance) desc nulls last"),
         AWARD_TOP_SCORER: _top_player(
             conn, season, "group by pgl.player_id order by sum(pgl.goals) desc"),
         AWARD_TOP_GOALIE: _top_player(
             conn, season,
             "and p.position = 'Goalie' group by pgl.player_id order by sum(pgl.saves) desc"),
-        AWARD_ROOKIE: _top_player(
-            conn, season,
-            "and p.years_in_league = 0 "
-            "group by pgl.player_id order by sum(pgl.performance) desc nulls last"),
     }
     assigned: dict[str, str | None] = {}
     for label, puid in winners.items():

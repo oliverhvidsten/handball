@@ -66,11 +66,13 @@ def test_advance_season_full_rollover():
     with _engine.begin() as c:
         a = _team(c, "Alpha", wins=5)
         b = _team(c, "Bravo", wins=1)
-        # award fixture (all on Alpha): distinct leaders
-        mvp = _player(c, "a-mvp", a, "Forward", yil=5, off=6.0)          # top performance
+        # stat-title fixture (all on Alpha): distinct leaders. The MVP and Rookie of
+        # the Year are VOTED now (handball/voting.py) and no longer computed here,
+        # but the extra players stay so the rollover still ages a full-ish roster.
+        other = _player(c, "a-other", a, "Forward", yil=5, off=6.0)
         scorer = _player(c, "a-scorer", a, "Forward", yil=3)            # top goals
         goalie = _player(c, "a-gk", a, "Goalie", yil=2, gk=6.0)         # only/most saves
-        rookie = _player(c, "a-roy", a, "Forward", yil=0)              # top rookie performance
+        rookie = _player(c, "a-roy", a, "Forward", yil=0)
         # a Bravo player whose contract is up -> free agent after aging
         expiring = _player(c, "b-fa", b, "Defense", yr=0)
         keep = _player(c, "b-keep", b, "Defense", yr=4)
@@ -79,7 +81,7 @@ def test_advance_season_full_rollover():
                  "away_score) values (:s, 1, cast(:a as uuid), cast(:b as uuid), 3, 2) returning id"),
             {"s": _SEASON, "a": a, "b": b},
         ).scalar_one())
-        _line(c, g, mvp, a, goals=10, perf=100.0)
+        _line(c, g, other, a, goals=10, perf=100.0)
         _line(c, g, scorer, a, goals=50, perf=20.0)
         _line(c, g, goalie, a, saves=30, perf=30.0)
         _line(c, g, rookie, a, goals=5, perf=40.0)
@@ -88,16 +90,14 @@ def test_advance_season_full_rollover():
 
     assert summary["new_season"] == _SEASON + 1
     assert summary["awards"] == {
-        offseason.AWARD_MVP: "a-mvp",
         offseason.AWARD_TOP_SCORER: "a-scorer",
         offseason.AWARD_TOP_GOALIE: "a-gk",
-        offseason.AWARD_ROOKIE: "a-roy",
     }
 
     with _engine.connect() as c:
         # awards persisted with season + plain-text label
         n_awards = c.execute(text("select count(*) from awards where season=:s"), {"s": _SEASON}).scalar_one()
-        assert n_awards == 4
+        assert n_awards == 2
 
         # draft order for N+1: reverse standings (Bravo first), 2 rounds, pick_number 1..4
         picks = c.execute(
@@ -108,7 +108,7 @@ def test_advance_season_full_rollover():
         assert [(p[0], p[2]) for p in picks] == [(1, "Bravo"), (2, "Alpha"), (3, "Bravo"), (4, "Alpha")]
 
         # aging: age +1, years_remaining -1; a young player's offense grows toward ceiling
-        row = c.execute(text("select age, years_remaining, offense from players where legacy_id='a-mvp'")).first()
+        row = c.execute(text("select age, years_remaining, offense from players where legacy_id='a-other'")).first()
         assert row[0] == 26 and row[1] == 2 and row[2] > 6.0
 
         # free agency: expired contract left its team; the multi-year deal stayed

@@ -418,8 +418,8 @@ def test_playoff_lines_stay_out_of_season_stats(ranked):
 
 
 def test_awards_ignore_playoff_lines(ranked):
-    """A monster postseason must not win the MVP: the awards read the same
-    regular-season-only lines the leaderboard does."""
+    """A monster postseason must not win the scoring title: the stat awards read the
+    same regular-season-only lines the leaderboard does."""
     from handball import offseason
 
     with _engine.begin() as c:
@@ -446,7 +446,8 @@ def test_awards_ignore_playoff_lines(ranked):
         awards = offseason._compute_awards(c, _SEASON)
 
     assert awards[offseason.AWARD_TOP_SCORER] == "boston-f1"
-    assert awards[offseason.AWARD_MVP] == "boston-f1"
+    # The voted awards are not computed here at all any more; only the stat titles.
+    assert set(awards) == set(offseason.STAT_AWARDS)
 
 
 # -- recovery ----------------------------------------------------------------
