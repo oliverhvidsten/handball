@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from handball import contract_admin
+from handball import draft
 from handball import free_agency as fa
 from handball import league_structure
 from handball import offseason
@@ -399,6 +400,12 @@ def open_free_agency(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(
             status_code=409,
             detail="the season is already under way; free agency belongs to the offseason")
+    # The draft comes first in the offseason: a manager cannot know what holes they
+    # are signing to fill until they know which ones their picks filled.
+    try:
+        draft.assert_complete(engine, season)
+    except draft.DraftError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return _fa_action(fa.open_period, engine, season, actor=mgr.user_id)
 
 

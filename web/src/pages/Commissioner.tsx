@@ -301,6 +301,14 @@ export default function Commissioner() {
           rather than inside a seasonComplete branch. */}
       {season && <VotingPanel season={season.season} onToast={setToast} />}
 
+      {/* The draft: lottery, prospect class, the room, and forcing a pick. Mounted
+          unconditionally because the draft's own phase decides whether there is
+          anything to show -- it renders nothing at all until the rollover has seeded
+          an order, then walks the commissioner through one step at a time. It cannot live in
+          the Offseason block below: that block is for a season that has FINISHED, and
+          a draft belongs to the one the rollover has just opened. */}
+      {season && <DraftPanel season={season.season} onToast={setToast} />}
+
       {/* -- postseason ----------------------------------------------------
           One round per click. Managers set lineups between rounds, which is the
           reason the bracket isn't simulated in one go. The bracket itself renders
@@ -435,10 +443,10 @@ export default function Commissioner() {
             </Button>
           </div>
 
-          {/* The rest of the offseason: the draft (lottery, prospects, the room) and
-              the Hall of Fame class. Both are commissioner-run and both belong to the
-              window between the Final and the rollover. */}
-          <DraftPanel season={season!.season} onToast={setToast} />
+          {/* The rest of the offseason: the Hall of Fame class, which belongs to the
+              window between the Final and the rollover. The draft panel is NOT here --
+              a draft belongs to the season the rollover has just opened, when
+              seasonComplete is false again; see where it is mounted above. */}
           <HallOfFamePanel season={season!.season} onToast={setToast} />
         </>
       )}

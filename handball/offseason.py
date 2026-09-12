@@ -97,7 +97,7 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
     new_season = season + 1
     with engine.begin() as conn:
         awards = _compute_awards(conn, season)
-        picks = _seed_draft_order(conn, ranked_team_ids, new_season)
+        picks = _seed_draft_order(conn, ranked_team_ids, new_season, season)
         for future_season in range(new_season + 1, new_season + 11):
             _extend_future_picks(conn, future_season)
         aged = _age_all_players(conn)
@@ -176,38 +176,21 @@ def _top_player(conn, season: int, tail_sql: str):
 
 
 # -- draft-pick-order seeding ------------------------------------------------
-def _seed_draft_order(conn, ranked_team_ids: list[str], new_season: int) -> int:
-    """Seed/refresh next season's draft pick order. `ranked_team_ids` is best->worst;
-    the draft runs worst->best, so reverse it. Each round repeats that order;
-    pick_number is the overall (1..teams*rounds) order.
+def _seed_draft_order(conn, ranked_team_ids: list[str], new_season: int,
+                      finished_season: int | None = None) -> int:
+    """Seed/refresh next season's draft pick order. Delegates to
+    handball/draft.py: the order is no longer plain reverse standings (round 1 is
+    half lottery and half bracket, and round 2 puts every playoff team behind every
+    non-playoff team), and that shape belongs with the rest of the draft's rules
+    rather than here.
 
-    A placeholder row for `new_season` may already exist (from _extend_future_picks
-    on an earlier rollover, or the 0009 backfill) and may already have been traded
-    (holder_team_id != original_team_id). This upserts on
-    (season, round, original_team_id) -- always setting pick_number, but only
-    defaulting holder_team_id = original_team_id on a true first insert; on conflict,
-    holder_team_id is left untouched so an existing trade survives. Idempotent for
-    the season. Returns picks seeded (inserted-or-updated)."""
-    order = list(reversed(ranked_team_ids))  # worst picks first
-    slug_to_id = {slug: tid for slug, tid in conn.execute(text("select slug, id from teams")).all()}
-    rows, overall = [], 0
-    for rnd in range(1, DRAFT_ROUNDS + 1):
-        for slug in order:
-            tid = slug_to_id.get(slug)
-            if tid is None:
-                continue
-            overall += 1
-            rows.append({"s": new_season, "r": rnd, "tid": str(tid), "n": overall})
-    if rows:
-        conn.execute(
-            text("insert into draft_picks "
-                 "(season, round, original_team_id, holder_team_id, pick_number) "
-                 "values (:s, :r, cast(:tid as uuid), cast(:tid as uuid), :n) "
-                 "on conflict (season, round, original_team_id) "
-                 "do update set pick_number = excluded.pick_number"),
-            rows,
-        )
-    return len(rows)
+    `finished_season` is the season whose postseason decides the playoff half. It is
+    optional so the pre-draft callers -- and any league that never played a
+    postseason -- keep the old reverse-standings behaviour; see
+    draft.seed_draft_order for exactly what changes when a bracket is present."""
+    from handball import draft
+
+    return draft.seed_draft_order(conn, ranked_team_ids, new_season, finished_season)
 
 
 def _extend_future_picks(conn, target_season: int) -> int:

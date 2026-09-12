@@ -1,9 +1,10 @@
 """
 Name: season_readiness.py
 Description: The league's preconditions for STARTING a season -- the "no games can be
-    played until this is fixed" list. Today: no team above the hard cap, free agency
-    settled, and every team able to field a legal lineup. It is built as a registry so
-    the list can grow without the API, the UI, or the run controls changing at all:
+    played until this is fixed" list. Today: no team above the hard cap, the draft
+    finished, free agency settled, and every team able to field a legal lineup. It is
+    built as a registry so the list can grow without the API, the UI, or the run
+    controls changing at all:
     write a new check function, decorate it, and it shows up everywhere readiness is
     reported.
 
@@ -61,6 +62,16 @@ class OpenFreeAgency:
 
 
 @dataclass(frozen=True)
+class UnfinishedDraft:
+    """A draft for this season that has not finished (handball/draft.py). Present
+    only while one is outstanding; None means either the draft is complete or this
+    league has no draft for the season at all -- leagues that predate the draft, and
+    every offline fixture, must not be blocked by a phase they never had."""
+    season: int
+    status: str
+
+
+@dataclass(frozen=True)
 class TeamRoster:
     """One team's roster SHAPE -- the counts the arrangement rules actually read.
 
@@ -106,6 +117,7 @@ class LeagueState:
     payrolls: tuple[TeamPayroll, ...] = ()
     free_agency: OpenFreeAgency | None = None
     rosters: tuple[TeamRoster, ...] = ()
+    draft: UnfinishedDraft | None = None
 
 
 # -- findings ----------------------------------------------------------------
@@ -214,6 +226,39 @@ def _hard_cap_compliance(state: LeagueState) -> list[Blocker]:
                     "payroll": team.payroll, "hard_cap": HARD_CAP, "over_by": over},
         ))
     return out
+
+
+@readiness_check(
+    "draft_complete",
+    "The draft is finished -- every pick has been made.",
+)
+def _draft_finished(state: LeagueState) -> list[Blocker]:
+    """A season cannot start with picks still on the board. Draftees are rostered
+    players on rookie contracts, so an unfinished draft means teams opening the year
+    short of the bodies they are owed -- and free agency is gated on the draft too
+    (a manager who has not picked yet cannot know what holes they are signing to
+    fill). The fix is the commissioner's: draw the lottery, open the room, and let
+    the clock finish what the managers do not.
+
+    Declared ahead of the free-agency check because that is the order the offseason
+    runs in, and the registry reports blockers in registration order -- the
+    commissioner should be told to finish the draft before being told to close a
+    market that cannot open yet."""
+    draft = state.draft
+    if draft is None:
+        return []
+    where = {
+        "pending": "the lottery has not been drawn",
+        "lottery_drawn": "the room has not opened",
+        "open": "it is still on the clock",
+    }.get(draft.status, f"it is {draft.status!r}")
+    return [Blocker(
+        check="draft_complete",
+        subject="The draft",
+        message=(f"The {draft.season} draft is not finished ({where}); finish it "
+                 f"before the season can start."),
+        detail={"season": draft.season, "status": draft.status},
+    )]
 
 
 @readiness_check(
@@ -332,6 +377,14 @@ def load_league_state(engine: Engine, season: int) -> LeagueState:
                  "from fa_periods f left join fa_rounds r on r.period_id = f.id "
                  "where f.status = 'open' order by r.round_number desc nulls last limit 1")
         ).mappings().first()
+        # The draft for this season, when one exists and has not finished. Read
+        # here rather than through draft.py so this module keeps its one dependency
+        # (salary_cap); the status vocabulary is alembic 0014's CHECK constraint.
+        draft_row = conn.execute(
+            text("select season, status from draft_state "
+                 "where season = :s and status <> 'complete'"),
+            {"s": season},
+        ).mappings().first()
         # Roster shape, one row per (team, position). The retired filter is in the
         # JOIN, not a WHERE, so a team whose players have all retired still comes
         # back -- as an empty roster, which is exactly the blocker we want to report.
@@ -372,6 +425,9 @@ def load_league_state(engine: Engine, season: int) -> LeagueState:
             round_status=fa["round_status"] or "none",
             live_auctions=int(fa["live_auctions"] or 0),
         ) if fa else None,
+        draft=UnfinishedDraft(
+            season=int(draft_row["season"]), status=draft_row["status"],
+        ) if draft_row else None,
         rosters=tuple(
             TeamRoster(team_id=tid, slug=ident[tid][0], name=ident[tid][1],
                        by_position=counts[tid], unplaced=unplaced[tid])
