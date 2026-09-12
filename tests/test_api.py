@@ -588,6 +588,32 @@ def test_bulk_contracts_restarts_every_expired_counter(client, two_teams):
     assert {(r[1], r[2]) for r in rows} == {(3, 8)}      # deal itself untouched
 
 
+def test_bulk_contracts_stagger_previews_a_seed_and_applies_it_verbatim(client, two_teams):
+    """A stagger draws random counters. The dry run picks the seed and echoes it; the
+    apply that passes it back must write exactly the plan that was shown."""
+    _expire_all_contracts(years=-6, term=4, value=8)
+    _as_manager("", role="commissioner")
+    preview = client.post("/contracts/bulk", json={"strategy": "stagger_expired"})
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["dry_run"] is True and body["strategy"] == "stagger_expired"
+    assert isinstance(body["seed"], int) and body["changed"] == 38
+    shown = {c["player_id"]: c["years_remaining"]["after"] for c in body["changes"]}
+    assert all(1 <= y <= 4 for y in shown.values())
+
+    applied = client.post("/contracts/bulk", json={
+        "strategy": "stagger_expired", "seed": body["seed"], "dry_run": False,
+    })
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["seed"] == body["seed"]
+
+    with _engine.connect() as c:
+        rows = c.execute(text("select legacy_id, years_remaining, contract_term, "
+                              "contract_value from players where team_id is not null")).all()
+    assert {r[0]: r[1] for r in rows} == shown           # what was shown is what landed
+    assert {(r[2], r[3]) for r in rows} == {(4, 8)}      # deal itself untouched
+
+
 def test_bulk_contracts_does_not_disturb_rookie_or_restricted_status(client, two_teams):
     """A repair fixes a counter. update_contract clears both flags when told a deal
     is not a rookie one, so the bulk path must not let that leak."""

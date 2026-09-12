@@ -28,6 +28,7 @@ manager↔team ownership + the commissioner role.
 """
 from __future__ import annotations
 
+import secrets
 import os
 import threading
 import urllib.request
@@ -174,6 +175,9 @@ class BulkContractBody(BaseModel):
     strategy: str = Field(default=contract_admin.RESTART)
     overrides: list[ContractOverrideBody] = Field(default_factory=list)
     dry_run: bool = True
+    # The stagger strategy's draw. Omit it on a preview and the server picks one
+    # and echoes it in the plan; pass that value back to apply exactly what was shown.
+    seed: int | None = None
 
 
 class SigningBody(BaseModel):
@@ -354,9 +358,12 @@ def contracts_bulk(body: BulkContractBody, mgr: Manager = Depends(get_current_ma
     _require_no_run_in_flight()
     overrides = [contract_admin.Override(player_id=o.player_id, term=o.term, value=o.value)
                  for o in body.overrides]
+    seed = body.seed
+    if seed is None and body.strategy == contract_admin.STAGGER:
+        seed = secrets.randbelow(2**31)
     run = contract_admin.plan if body.dry_run else contract_admin.apply_bulk
     try:
-        plan = run(engine, strategy=body.strategy, overrides=overrides)
+        plan = run(engine, strategy=body.strategy, overrides=overrides, seed=seed)
     except contract_admin.BulkContractError as e:
         raise HTTPException(status_code=400, detail={"problems": e.problems})
     return {"dry_run": body.dry_run, **plan.as_dict()}

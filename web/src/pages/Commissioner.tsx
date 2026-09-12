@@ -49,11 +49,16 @@ interface ContractAudit {
   restart_expiring_next_rollover?: number;
   restart_problems?: string[];
 }
+type BulkStrategy = "restart_expired" | "stagger_expired";
+
 interface BulkPlan {
+  strategy: BulkStrategy | "none";
+  seed: number | null;
   changed: number;
   unchanged: number;
   expiring_before: number;
   expiring_next_rollover: number;
+  expiry_cohorts: Record<string, number>;
   payrolls: { team: string; before: number; after: number }[];
 }
 
@@ -65,6 +70,9 @@ export default function Commissioner() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [contracts, setContracts] = useState<ContractAudit | null>(null);
   const [contractPlan, setContractPlan] = useState<BulkPlan | null>(null);
+  // Stagger is the default: a league where every deal restarts on the same day
+  // has a third of its players expiring together at the next rollover.
+  const [contractStrategy, setContractStrategy] = useState<BulkStrategy>("stagger_expired");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -146,7 +154,9 @@ export default function Commissioner() {
   }
 
   // The repair is two clicks on purpose: it rewrites every expired contract in the
-  // league, so the plan is shown (dry run) before anything is written.
+  // league, so the plan is shown (dry run) before anything is written. A stagger
+  // draws random counters, so the preview's seed is sent back on apply -- what was
+  // shown is exactly what gets written.
   async function runContractRepair(dryRun: boolean) {
     const path = dryRun ? "/contracts/bulk:preview" : "/contracts/bulk";
     setErr(null);
@@ -154,13 +164,21 @@ export default function Commissioner() {
     try {
       const plan = await apiFetch<BulkPlan>("/contracts/bulk", {
         method: "POST",
-        body: JSON.stringify({ dry_run: dryRun }),
+        body: JSON.stringify({
+          dry_run: dryRun,
+          strategy: contractStrategy,
+          seed: dryRun ? null : contractPlan?.seed ?? null,
+        }),
       });
       if (dryRun) {
         setContractPlan(plan);
       } else {
         setContractPlan(null);
-        setToast(`Restarted ${plan.changed} contract(s).`);
+        setToast(
+          contractStrategy === "stagger_expired"
+            ? `Staggered ${plan.changed} contract(s).`
+            : `Restarted ${plan.changed} contract(s).`,
+        );
         await load();
       }
     } catch (e) {
@@ -478,14 +496,45 @@ export default function Commissioner() {
             />
           )}
 
+          {contracts.restart_runnable !== false && (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, fontSize: "var(--text-sm)" }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="contract-strategy"
+                  checked={contractStrategy === "stagger_expired"}
+                  onChange={() => { setContractStrategy("stagger_expired"); setContractPlan(null); }}
+                />
+                Stagger: each expired deal restarts 1 to N years from its end, N being its length
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="contract-strategy"
+                  checked={contractStrategy === "restart_expired"}
+                  onChange={() => { setContractStrategy("restart_expired"); setContractPlan(null); }}
+                />
+                Restart: every expired deal starts over at its full length
+              </label>
+            </div>
+          )}
+
           {contractPlan && (
             <Alert tone="info" title="Preview — nothing has been written" style={{ marginBottom: 12 }}>
-              Restarts {contractPlan.changed} contract(s) at the term already on the books,
-              leaving {contractPlan.unchanged} untouched. Players expiring at the next
-              rollover: {contractPlan.expiring_before} → {contractPlan.expiring_next_rollover}.
+              {contractPlan.strategy === "stagger_expired" ? "Staggers" : "Restarts"} {contractPlan.changed} contract(s),
+              keeping every term and salary as they are, and leaving {contractPlan.unchanged} untouched.
+              Players expiring at the next rollover: {contractPlan.expiring_before} → {contractPlan.expiring_next_rollover}.
               {contractPlan.payrolls.length === 0
                 ? " No team's payroll changes."
                 : ` ${contractPlan.payrolls.length} team payroll(s) change.`}
+              <div style={{ marginTop: 6, color: "var(--muted)" }}>
+                Years remaining afterwards:{" "}
+                {Object.entries(contractPlan.expiry_cohorts)
+                  .sort(([a], [b]) => Number(a) - Number(b))
+                  .map(([y, n]) => `${y}y: ${n}`)
+                  .join(" · ")}
+                {contractPlan.seed != null && ` · draw #${contractPlan.seed}`}
+              </div>
             </Alert>
           )}
 
@@ -495,7 +544,9 @@ export default function Commissioner() {
                 disabled={busy != null}
                 onClick={() => void runContractRepair(true)}
               >
-                {busy === "/contracts/bulk:preview" ? "Checking…" : "Preview repair"}
+                {busy === "/contracts/bulk:preview"
+                  ? "Checking…"
+                  : contractPlan ? "Preview again (new draw)" : "Preview repair"}
               </Button>
               {contractPlan && (
                 <Button
@@ -505,7 +556,7 @@ export default function Commissioner() {
                 >
                   {busy === "/contracts/bulk"
                     ? "Applying…"
-                    : `Restart ${contractPlan.changed} contract(s)`}
+                    : `${contractPlan.strategy === "stagger_expired" ? "Stagger" : "Restart"} ${contractPlan.changed} contract(s)`}
                 </Button>
               )}
             </div>

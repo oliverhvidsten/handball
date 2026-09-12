@@ -30,6 +30,13 @@ Description: The commissioner's BULK contract path -- (re)assigning term and val
         (`years_remaining <= 0`) has it restarted at their existing contract_term.
         Term and value are untouched, so no team's payroll moves and no cap question
         arises -- it reads the deal already on the books and gives it a start date.
+      - The STAGGER strategy is the same repair with a realistic spread: an expired
+        counter restarts at a random whole number of years between 1 and the
+        contract_term on the books, as if the deal had been signed some unknown
+        number of seasons ago. Term and value are still untouched. The draw is
+        seeded and keyed per player, so a previewed plan is exactly the plan that
+        gets applied when the same seed is passed back -- a dry run of random
+        numbers that then rolls different ones would not be a dry run.
       - OVERRIDES are explicit per-player (term, value) assignments, for the deals
         the commissioner wants to actually decide. These do move payroll, so they
         are held to the cap rule below.
@@ -45,6 +52,7 @@ Author: contract administration
 """
 from __future__ import annotations
 
+import random
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -57,7 +65,17 @@ from handball.salary_cap import ContractError, assert_trade_hard_cap, validate_c
 # The strategy name for the mass repair. Kept a constant because it crosses the API
 # boundary as a string.
 RESTART = "restart_expired"
-STRATEGIES = (RESTART, "none")
+STAGGER = "stagger_expired"
+STRATEGIES = (RESTART, STAGGER, "none")
+
+
+def stagger_years(seed: int, player_id: str, term: int) -> int:
+    """The staggered counter for one player: a whole number of years in 1..term,
+    drawn from a stream keyed on (seed, player) so the answer depends on nothing
+    else -- not the order rows came back in, not which other players are in the
+    plan. Two calls with the same arguments always agree; that is what lets a
+    preview be applied verbatim."""
+    return random.Random(f"{seed}:{player_id}").randint(1, term)
 
 
 class BulkContractError(ValueError):
@@ -152,9 +170,14 @@ class BulkPlan:
     expiring_next_rollover: int = 0
     expiring_before: int = 0
     unchanged: int = 0
+    strategy: str = "none"
+    seed: int | None = None
 
     def as_dict(self) -> dict:
         return {
+            "strategy": self.strategy,
+            # Echoed so a stagger preview can be applied with the same draw.
+            "seed": self.seed,
             "changes": [c.as_dict() for c in self.changes],
             "changed": len(self.changes),
             "unchanged": self.unchanged,
@@ -179,9 +202,12 @@ def plan_bulk_contracts(
     *,
     strategy: str = RESTART,
     overrides: list[Override] | None = None,
+    seed: int | None = None,
 ) -> BulkPlan:
     """Decide every contract change, or raise BulkContractError with ALL the reasons
-    it cannot be done. Pure: no database, no clock, no randomness.
+    it cannot be done. Pure: no database, no clock, and the only randomness is the
+    STAGGER draw, which is a deterministic function of `seed` (required for that
+    strategy, ignored otherwise).
 
     Order matters where the two instructions overlap: an override WINS over the
     restart strategy for the same player, because it is the more specific
@@ -191,6 +217,9 @@ def plan_bulk_contracts(
     if strategy not in STRATEGIES:
         raise BulkContractError([f"unknown strategy {strategy!r}; "
                                  f"expected one of {', '.join(STRATEGIES)}"])
+    if strategy == STAGGER and seed is None:
+        raise BulkContractError(["the stagger strategy needs a seed, so that the plan "
+                                 "previewed is the plan applied"])
 
     by_id = {r.player_id: r for r in rows}
     problems: list[str] = []
@@ -214,8 +243,10 @@ def plan_bulk_contracts(
         o = overridden.get(row.player_id)
         if o is not None:
             term, value, reason = o.term, o.value, "override"
-        elif strategy == RESTART and row.years_remaining <= 0:
-            # The repair: the deal on the books, started now. A term of 0 is what an
+            years = term                    # a new deal starts at its full length
+        elif strategy in (RESTART, STAGGER) and row.years_remaining <= 0:
+            # The repair: the deal on the books, started now (restart) or some
+            # unknown number of seasons ago (stagger). A term of 0 is what an
             # unmodelled import looks like and cannot be restarted into a legal
             # contract (the minimum is 1 year) -- name it rather than silently
             # inventing a length.
@@ -225,12 +256,16 @@ def plan_bulk_contracts(
                     f"{row.contract_term}, so there is no deal to restart -- give this "
                     f"player an explicit override")
                 continue
-            term, value, reason = row.contract_term, row.contract_value, "restart"
+            term, value = row.contract_term, row.contract_value
+            if strategy == RESTART:
+                years, reason = term, "restart"
+            else:
+                years, reason = stagger_years(seed, row.player_id, term), "stagger"
         else:
             continue
 
-        if (term, value, term) == (row.contract_term, row.contract_value,
-                                   row.years_remaining):
+        if (term, value, years) == (row.contract_term, row.contract_value,
+                                    row.years_remaining):
             continue                        # already exactly this deal; not a change
 
         # Every change is validated, whatever produced it. A restart re-uses the
@@ -243,14 +278,14 @@ def plan_bulk_contracts(
         except ContractError as e:
             problems.append(f"{row.player_id} ({row.name}): {e}"
                             + (" -- give this player an explicit override"
-                               if reason == "restart" else ""))
+                               if reason in ("restart", "stagger") else ""))
             continue
         changes.append(ContractChange(
             player_id=row.player_id, name=row.name, team_name=row.team_name,
             reason=reason,
             term_before=row.contract_term, term_after=term,
             value_before=row.contract_value, value_after=value,
-            years_before=row.years_remaining, years_after=term,
+            years_before=row.years_remaining, years_after=years,
         ))
     if problems:
         raise BulkContractError(problems)
@@ -303,6 +338,8 @@ def plan_bulk_contracts(
         expiring_next_rollover=expiring,
         expiring_before=expiring_before,
         unchanged=len(rows) - len(changes),
+        strategy=strategy,
+        seed=seed if strategy == STAGGER else None,
     )
 
 
@@ -336,15 +373,15 @@ def load_contracts(conn) -> list[ContractRow]:
 
 
 def plan(engine: Engine, *, strategy: str = RESTART,
-         overrides: list[Override] | None = None) -> BulkPlan:
+         overrides: list[Override] | None = None, seed: int | None = None) -> BulkPlan:
     """Dry run: what a bulk change would do, without writing anything."""
     with engine.connect() as conn:
         rows = load_contracts(conn)
-    return plan_bulk_contracts(rows, strategy=strategy, overrides=overrides)
+    return plan_bulk_contracts(rows, strategy=strategy, overrides=overrides, seed=seed)
 
 
 def apply_bulk(engine: Engine, *, strategy: str = RESTART,
-               overrides: list[Override] | None = None) -> BulkPlan:
+               overrides: list[Override] | None = None, seed: int | None = None) -> BulkPlan:
     """Plan and write, in ONE transaction: the rows are re-read inside it, so the
     plan that is applied is the plan for the state actually being written.
 
@@ -359,7 +396,8 @@ def apply_bulk(engine: Engine, *, strategy: str = RESTART,
     rookie or restricted status as a side effect of fixing their counter."""
     with engine.begin() as conn:
         rows = load_contracts(conn)
-        computed = plan_bulk_contracts(rows, strategy=strategy, overrides=overrides)
+        computed = plan_bulk_contracts(rows, strategy=strategy, overrides=overrides,
+                                       seed=seed)
         by_id = {r.player_id: r for r in rows}
         updates = []
         for change in computed.changes:
@@ -373,6 +411,10 @@ def apply_bulk(engine: Engine, *, strategy: str = RESTART,
             )
             player.update_contract(change.term_after, change.value_after,
                                    rookie=row.rookie_contract)
+            # update_contract starts a deal at its full length. A stagger says the
+            # deal is already PART-WAY through, so the validated write is kept and
+            # only the counter is moved to where the plan (and the preview) put it.
+            player.years_remaining = change.years_after
             updates.append({
                 "lid": row.player_id,
                 "term": player.contract_term,

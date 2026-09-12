@@ -7,10 +7,12 @@ import pytest
 
 from handball.contract_admin import (
     RESTART,
+    STAGGER,
     BulkContractError,
     ContractRow,
     Override,
     plan_bulk_contracts,
+    stagger_years,
 )
 from handball.simulation_vars import HARD_CAP, MAX_CONTRACT_VALUE, MAX_CONTRACT_YEARS
 
@@ -256,3 +258,90 @@ def test_an_empty_league_plans_nothing():
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# -- the stagger strategy ----------------------------------------------------
+def _league(n: int = 200, term: int = 5) -> list[ContractRow]:
+    return [_row(f"p{i}", term=term, value=10, years=-(i % 4)) for i in range(n)]
+
+
+def test_a_stagger_needs_a_seed():
+    with pytest.raises(BulkContractError) as e:
+        plan_bulk_contracts([_row("p1")], strategy=STAGGER)
+    assert "seed" in e.value.problems[0]
+
+
+def test_a_stagger_lands_every_expired_counter_between_one_and_its_term():
+    plan = plan_bulk_contracts(_league(term=5), strategy=STAGGER, seed=1)
+    assert len(plan.changes) == 200
+    assert all(1 <= c.years_after <= 5 for c in plan.changes)
+    assert all(c.reason == "stagger" for c in plan.changes)
+    # the deal itself is exactly what was on the books
+    assert all((c.term_after, c.value_after) == (c.term_before, c.value_before)
+               for c in plan.changes)
+    # ...and with 200 draws over 5 slots every year actually appears
+    assert set(plan.expiry_cohorts) == {1, 2, 3, 4, 5}
+
+
+def test_a_stagger_never_exceeds_a_short_term():
+    plan = plan_bulk_contracts([_row(f"p{i}", term=1, years=-3) for i in range(30)],
+                               strategy=STAGGER, seed=3)
+    assert {c.years_after for c in plan.changes} == {1}
+
+
+def test_the_same_seed_gives_the_same_plan_whatever_the_row_order():
+    rows = _league()
+    a = plan_bulk_contracts(rows, strategy=STAGGER, seed=42)
+    b = plan_bulk_contracts(list(reversed(rows)), strategy=STAGGER, seed=42)
+    assert {c.player_id: c.years_after for c in a.changes} == \
+           {c.player_id: c.years_after for c in b.changes}
+    assert a.seed == 42 and a.strategy == STAGGER
+
+
+def test_a_different_seed_gives_a_different_plan():
+    rows = _league()
+    a = plan_bulk_contracts(rows, strategy=STAGGER, seed=1)
+    b = plan_bulk_contracts(rows, strategy=STAGGER, seed=2)
+    assert {c.player_id: c.years_after for c in a.changes} != \
+           {c.player_id: c.years_after for c in b.changes}
+
+
+def test_stagger_years_is_a_pure_function_of_seed_and_player():
+    assert stagger_years(9, "p1", 5) == stagger_years(9, "p1", 5)
+    assert all(1 <= stagger_years(9, f"p{i}", 3) <= 3 for i in range(500))
+
+
+def test_a_stagger_leaves_live_contracts_alone():
+    plan = plan_bulk_contracts([_row("live", years=2), _row("dead", years=0)],
+                               strategy=STAGGER, seed=5)
+    assert [c.player_id for c in plan.changes] == ["dead"]
+    assert plan.unchanged == 1
+
+
+def test_an_override_wins_over_the_stagger_strategy():
+    plan = plan_bulk_contracts([_row("p1", term=3, years=0)], strategy=STAGGER, seed=5,
+                               overrides=[Override("p1", term=2, value=7)])
+    (c,) = plan.changes
+    assert (c.reason, c.term_after, c.value_after, c.years_after) == ("override", 2, 7, 2)
+
+
+def test_a_stagger_of_a_player_with_no_term_is_named_not_guessed():
+    with pytest.raises(BulkContractError) as e:
+        plan_bulk_contracts([_row("p1", term=0, years=0)], strategy=STAGGER, seed=5)
+    assert "no deal to restart" in e.value.problems[0]
+
+
+def test_a_stagger_spreads_the_next_rollover_out():
+    rows = _league(n=300, term=5)
+    restart = plan_bulk_contracts(rows, strategy=RESTART)
+    stagger = plan_bulk_contracts(rows, strategy=STAGGER, seed=11)
+    assert restart.expiring_next_rollover == 0            # everyone at 5 years
+    # roughly a fifth of 300 land on 1 year; well inside a loose band
+    assert 30 <= stagger.expiring_next_rollover <= 90
+    assert stagger.expiring_before == 300
+
+
+
+def test_restart_plans_carry_no_seed():
+    plan = plan_bulk_contracts([_row("p1")], strategy=RESTART, seed=99)
+    assert plan.seed is None and plan.strategy == RESTART
