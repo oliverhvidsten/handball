@@ -3,6 +3,9 @@ import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { TradeRow, EmptyState, Alert, Button, Toast } from "../ds";
 import { useFreeAgencyState } from "../lib/freeAgency";
+import DraftPanel from "../components/commissioner/DraftPanel";
+import VotingPanel from "../components/commissioner/VotingPanel";
+import HallOfFamePanel from "../components/commissioner/HallOfFamePanel";
 
 interface TeamLite { id: string; name: string; }
 interface TradeT { id: string; from_team_id: string; to_team_id: string; status: string; internal: boolean; }
@@ -293,6 +296,11 @@ export default function Commissioner() {
         </div>
       )}
 
+      {/* Award and All-Star voting. The panel knows its own phase (a ballot opens
+          itself once enough periods have run), so it sits with the run controls
+          rather than inside a seasonComplete branch. */}
+      {season && <VotingPanel season={season.season} onToast={setToast} />}
+
       {/* -- postseason ----------------------------------------------------
           One round per click. Managers set lineups between rounds, which is the
           reason the bracket isn't simulated in one go. The bracket itself renders
@@ -426,6 +434,12 @@ export default function Commissioner() {
               {busy === "/season/advance" ? "Advancing…" : `Advance to season ${season!.season + 1}`}
             </Button>
           </div>
+
+          {/* The rest of the offseason: the draft (lottery, prospects, the room) and
+              the Hall of Fame class. Both are commissioner-run and both belong to the
+              window between the Final and the rollover. */}
+          <DraftPanel season={season!.season} onToast={setToast} />
+          <HallOfFamePanel season={season!.season} onToast={setToast} />
         </>
       )}
 

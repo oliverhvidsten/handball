@@ -31,7 +31,9 @@ if _PG_OK:
 
 _TABLES = ("teams players injuries awards games player_game_lines "
            "draft_picks managers trades trade_assets fa_periods fa_rounds "
-           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series")
+           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series "
+           "ballots voting_status award_tallies all_star_games "
+           "draft_lotteries draft_state draft_prospects hall_of_fame")
 
 
 @pytest.fixture(autouse=True)

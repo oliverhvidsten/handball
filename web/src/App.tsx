@@ -16,6 +16,9 @@ import Trades from "./pages/Trades";
 import FreeAgents from "./pages/FreeAgents";
 import Draft from "./pages/Draft";
 import Playoffs from "./pages/Playoffs";
+import Vote from "./pages/Vote";
+import Awards from "./pages/Awards";
+import HallOfFame from "./pages/HallOfFame";
 import Commissioner from "./pages/Commissioner";
 import Account from "./pages/Account";
 import { usePendingTradeCount, useYourTurnCount } from "./hooks";
@@ -36,6 +39,9 @@ const NAV = [
   { label: "Schedule", to: "/schedule", scope: "league" },
   { label: "Playoffs", to: "/playoffs", scope: "league" },
   { label: "Draft", to: "/draft", scope: "league" },
+  { label: "Vote", to: "/vote", scope: "league" },
+  { label: "Awards", to: "/awards", scope: "league" },
+  { label: "Hall of Fame", to: "/hall-of-fame", scope: "league" },
 ];
 
 export default function App() {
@@ -109,6 +115,9 @@ export default function App() {
           <Route path="/free-agents" element={<FreeAgents />} />
           <Route path="/draft" element={<Draft />} />
           <Route path="/playoffs" element={<Playoffs />} />
+          <Route path="/vote" element={<Vote />} />
+          <Route path="/awards" element={<Awards />} />
+          <Route path="/hall-of-fame" element={<HallOfFame />} />
           {/* Mounted unconditionally: role resolves async after a cold load, so a
               conditional mount + the catch-all redirect would bounce a deep link
               to /commissioner over to /dashboard. The nav link stays gated, and

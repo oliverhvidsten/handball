@@ -49,7 +49,6 @@ from handball import signing_service as sign
 from handball import simulation_vars
 from handball import standings
 from handball import trade_service as ts
-from handball.db import get_engine
 from handball.domain import ArrangementError
 from handball.league import build_production_league_pg
 from handball.league_views import TeamArrangement
@@ -57,6 +56,19 @@ from handball.pg_repository import PostgresTeamRepository
 from handball.season import PERIODS
 
 from api.auth import Manager, get_current_manager
+from api.contracts import router as contracts_router
+from api.deps import (
+    active_season,
+    engine,
+    queue_clear,
+    require_commissioner,
+    require_owns,
+    require_owns_strict,
+    team_uuid,
+)
+from api.draft import router as draft_router
+from api.hall_of_fame import router as hall_of_fame_router
+from api.voting import router as voting_router
 
 app = FastAPI(title="NHA API")
 
@@ -74,8 +86,14 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-engine = get_engine()
 repo = PostgresTeamRepository(engine)
+
+# The feature routers. Each is owned by one Phase 1 agent and is empty until then;
+# they are mounted now so nobody has to come back and edit this file to add a route.
+app.include_router(draft_router)
+app.include_router(voting_router)
+app.include_router(contracts_router)
+app.include_router(hall_of_fame_router)
 
 
 # -- request bodies --------------------------------------------------------
@@ -154,12 +172,14 @@ class SigningBody(BaseModel):
 
 
 # -- helpers ---------------------------------------------------------------
-def _team_uuid(slug: str) -> str:
-    with engine.connect() as conn:
-        row = conn.execute(text("select id from teams where slug = :s"), {"s": slug}).first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"no team {slug!r}")
-    return str(row[0])
+# The shared ones live in api/deps.py so the feature routers can use them too; these
+# aliases keep every call site in this file (and the tests) reading as it always did.
+_team_uuid = team_uuid
+_require_owns = require_owns
+_require_commissioner = require_commissioner
+_require_owns_strict = require_owns_strict
+_active_season = active_season
+_queue_clear = queue_clear
 
 
 def _trade_team_slugs(trade_id: str) -> tuple[str, str]:
@@ -176,28 +196,6 @@ def _trade_team_slugs(trade_id: str) -> tuple[str, str]:
     return row["f"], row["t"]
 
 
-def _require_owns(mgr: Manager, slug: str) -> None:
-    if mgr.is_commissioner:
-        return
-    if not mgr.owns(_team_uuid(slug)):
-        raise HTTPException(status_code=403, detail="not your team")
-
-
-def _require_commissioner(mgr: Manager) -> None:
-    if not mgr.is_commissioner:
-        raise HTTPException(status_code=403, detail="commissioner only")
-
-
-def _require_owns_strict(mgr: Manager, slug: str) -> None:
-    """Ownership WITHOUT the commissioner bypass _require_owns grants. In a sealed-bid
-    auction the commissioner is also a manager with teams of their own; letting them
-    submit offers or bid as anybody would be a hole, not a convenience. Their powers
-    over the market are the explicit ones -- close a round, force a forfeit, award a
-    deadlock -- each of which is logged as a commissioner action."""
-    if not mgr.owns(_team_uuid(slug)):
-        raise HTTPException(status_code=403, detail="not your team")
-
-
 def _owned_teams(mgr: Manager) -> list[dict]:
     """The manager's teams as {id, slug, name}. A manager may own several, so every
     "is it my turn?" question is asked across all of them."""
@@ -210,30 +208,6 @@ def _owned_teams(mgr: Manager) -> list[dict]:
             {"ids": [str(t) for t in mgr.owned_team_ids]},
         ).mappings().all()
     return [dict(r) for r in rows]
-
-
-# Season the run controls manage. "Advance season" (a NEW season year) is out of
-# scope, so the active season is simply the one season_state knows about, else the
-# latest season with games, else a sensible default for a fresh league.
-DEFAULT_SEASON = 2026
-
-
-def _active_season() -> int:
-    with engine.connect() as conn:
-        row = conn.execute(text("select max(season) from season_state")).first()
-        if row and row[0] is not None:
-            return int(row[0])
-        row = conn.execute(text("select max(season) from games")).first()
-    return int(row[0]) if row and row[0] is not None else DEFAULT_SEASON
-
-
-def _queue_clear() -> bool:
-    """No accepted-but-unapproved trades are sitting in the commissioner queue."""
-    with engine.connect() as conn:
-        n = conn.execute(
-            text("select count(*) from trades where status = 'accepted'")
-        ).scalar_one()
-    return n == 0
 
 
 # -- endpoints -------------------------------------------------------------
