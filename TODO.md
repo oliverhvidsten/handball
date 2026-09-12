@@ -4,7 +4,7 @@ Running list of planned work. Add new items as they come up; remove items once d
 
 ## Open
 
-1. **Run the contract repair against the live league.** The spread question is answered: the `stagger_expired` strategy (default in the Commissioner panel) restarts each expired counter at a random 1..term instead of the full term, so the 672 expired deals spread across the next five rollovers rather than 233 landing at once. Preview, then apply with the seed the preview echoed. Must happen **before** the next `/season/advance`.
+1. ~~Run the contract repair~~ **Done 2026-09-12**: `stagger_expired` applied to the live league with seed 20260912. 672 counters set, no term or salary moved. Years remaining now 1: 384, 2: 134, 3: 87, 4: 47, 5: 20 — so 384 players (the 233 one-year deals plus 151 multi-year draws) reach free agency at the next rollover, a spread the commissioner accepted.
 2. **Six teams are over the hard cap** ($251M–$296M; Las Vegas worst at +$46M) and cannot start a season there. This is the teams' problem to fix by trading salary away, deliberately *not* something the bulk contract tool will paper over — but somebody has to tell those managers.
 
 3. **Apply alembic 0014-0017 to production before deploying this branch** (DEPLOY.md section 0). The API reads the new tables the moment it starts; code ahead of the schema is an outage. Every one of the four has a tested downgrade; 0015's is lossy for coach awards (there is no old shape for them).
