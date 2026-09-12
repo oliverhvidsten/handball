@@ -48,14 +48,18 @@ def propose_trade(
     *,
     players_out: Iterable[str] = (),
     players_in: Iterable[str] = (),
-    picks_out: Iterable[str] = (),
-    picks_in: Iterable[str] = (),
+    picks_out: Iterable[str | dict] = (),
+    picks_in: Iterable[str | dict] = (),
     proposed_by: str | None = None,
     internal: bool = False,
 ) -> str:
     """Create a trade. Assets are described from the proposing (from_team) side:
     *_out leave from_team for to_team; *_in come back the other way. players_* are
-    legacy_ids; picks_* are draft_picks ids. Returns trade id.
+    legacy_ids; picks_* are draft_picks ids, each either a plain id (unprotected) or
+    `{"pick_id": ..., "protection_top_n": N}` -- a protection two teams agree to at
+    trade time, carried on the pick until the lottery resolves it (see alembic
+    0014's docstring for why the condition lives on draft_picks rather than being
+    derived from the trade that created it). Returns trade id.
 
     `internal` (both teams owned by the proposer): the trade skips counterparty
     acceptance and is created already 'accepted', but -- like every trade -- only
@@ -118,8 +122,8 @@ def approve_trade(engine: Engine, trade_id: str, rules: RosterRules = DEFAULT_RU
 
         from_id, to_id = row["from_team_id"], row["to_team_id"]
         assets = conn.execute(
-            text("select direction, player_id, draft_pick_id from trade_assets "
-                 "where trade_id = cast(:id as uuid)"),
+            text("select direction, player_id, draft_pick_id, protection_top_n "
+                 "from trade_assets where trade_id = cast(:id as uuid)"),
             {"id": trade_id},
         ).mappings().all()
 
@@ -129,6 +133,11 @@ def approve_trade(engine: Engine, trade_id: str, rules: RosterRules = DEFAULT_RU
         payroll_before = {tid: _payroll(conn, tid) for tid in (from_id, to_id)}
 
         # 1. move assets. Players land unplaced (slots cleared) on the destination.
+        #    A pick's protection is exactly what THIS trade agreed to carry it as --
+        #    trade_assets.protection_top_n is copied onto the pick whether it's set
+        #    or null, and protection_outcome resets: a freshly-traded condition
+        #    hasn't been through the lottery yet (that resolution is the draft
+        #    agent's job, at draw time -- not here).
         for a in assets:
             dest = to_id if a["direction"] == "to_to" else from_id
             if a["player_id"] is not None:
@@ -139,8 +148,10 @@ def approve_trade(engine: Engine, trade_id: str, rules: RosterRules = DEFAULT_RU
                 )
             else:
                 conn.execute(
-                    text("update draft_picks set holder_team_id = :d where id = :p"),
-                    {"d": dest, "p": a["draft_pick_id"]},
+                    text("update draft_picks set holder_team_id = :d, "
+                         "protection_top_n = :prot, protection_outcome = null "
+                         "where id = :p"),
+                    {"d": dest, "p": a["draft_pick_id"], "prot": a["protection_top_n"]},
                 )
 
         # 2. no team may finish a trade over the hard cap (players keep their
@@ -240,9 +251,29 @@ def _add_player_asset(conn, trade_id, direction: str, legacy_id: str) -> None:
     )
 
 
-def _add_pick_asset(conn, trade_id, direction: str, pick_id: str) -> None:
+def _add_pick_asset(conn, trade_id, direction: str, pick: str | dict) -> None:
+    """`pick` is either a plain draft_picks id, or {"pick_id", "protection_top_n"}
+    for a protected pick. Only a round-1 pick may carry one (a protection makes
+    sense only on the picks whose value swings on the lottery), and only
+    1-32 is a legal top-N."""
+    if isinstance(pick, dict):
+        pick_id = pick.get("pick_id")
+        protection = pick.get("protection_top_n")
+    else:
+        pick_id = pick
+        protection = None
+    if protection is not None:
+        round_row = conn.execute(
+            text("select round from draft_picks where id = cast(:p as uuid)"), {"p": pick_id}
+        ).first()
+        if round_row is None:
+            raise TradeError(f"no pick {pick_id!r}")
+        if round_row[0] != 1:
+            raise TradeError("only a round-1 pick may carry a protection")
+        if not (1 <= protection <= 32):
+            raise TradeError("a pick protection must be between 1 and 32")
     conn.execute(
-        text("insert into trade_assets (trade_id, direction, draft_pick_id) "
-             "values (:t, :d, cast(:p as uuid))"),
-        {"t": trade_id, "d": direction, "p": pick_id},
+        text("insert into trade_assets (trade_id, direction, draft_pick_id, protection_top_n) "
+             "values (:t, :d, cast(:p as uuid), :prot)"),
+        {"t": trade_id, "d": direction, "p": pick_id, "prot": protection},
     )

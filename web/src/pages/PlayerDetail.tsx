@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { StatCard, StatChip, DataTable, Tag, Alert, EmptyState } from "../ds";
+import { apiFetch } from "../lib/api";
+import type { Inductee } from "../lib/hallOfFame";
 
 interface PP {
   id: string;
@@ -28,6 +30,7 @@ export default function PlayerDetail() {
   const [seasons, setSeasons] = useState<SeasonRow[]>([]);
   const [injuries, setInjuries] = useState<Injury[]>([]);
   const [awards, setAwards] = useState<Award[]>([]);
+  const [hofEntry, setHofEntry] = useState<Inductee | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -44,6 +47,19 @@ export default function PlayerDetail() {
       setSeasons((s as SeasonRow[]) ?? []);
       setInjuries((inj as Injury[]) ?? []);
       setAwards((aw as Award[]) ?? []);
+    })();
+  }, [legacyId]);
+
+  // Hall of Fame badge (handball/hall_of_fame.py). Best-effort: not signed in / API
+  // asleep just means no badge, not an error on the page.
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await apiFetch<{ inductees: Inductee[] }>("/hall-of-fame", { method: "GET" });
+        setHofEntry(r.inductees.find((i) => i.legacy_id === legacyId) ?? null);
+      } catch {
+        setHofEntry(null);
+      }
     })();
   }, [legacyId]);
 
@@ -66,7 +82,13 @@ export default function PlayerDetail() {
         <h2>{p.name}</h2>
         <Tag tone={POS_TONE[p.position] || "neutral"}>{p.position}</Tag>
         {p.is_injured && <Tag tone="red" solid>INJ</Tag>}
+        {hofEntry && <Tag tone="amber" solid title={`Class of ${hofEntry.inducted_season}`}>★ HALL OF FAME</Tag>}
       </div>
+      {hofEntry?.citation && (
+        <p style={{ margin: "0 0 6px", color: "var(--text-soft)", fontStyle: "italic" }}>
+          &ldquo;{hofEntry.citation}&rdquo; — Class of {hofEntry.inducted_season}
+        </p>
+      )}
       <div style={{ color: "var(--muted)", marginTop: 0, display: "flex", flexDirection: "column", gap: 2 }}>
         <span><span style={labelStyle}>Age</span> {p.age}</span>
         <span>

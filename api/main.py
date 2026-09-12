@@ -103,13 +103,24 @@ class ArrangementBody(BaseModel):
     reserves: list[str]
 
 
+class PickAssetBody(BaseModel):
+    """A pick asset that carries a protection agreed at trade time (handball/
+    hall_of_fame agent's trade_service addition). round-1-only and 1-32 are
+    re-checked in trade_service, which has the pick row; the bounds here only
+    keep nonsense out of the request."""
+    pick_id: str
+    protection_top_n: int | None = Field(default=None, ge=1, le=32)
+
+
 class TradeBody(BaseModel):
     from_team: str
     to_team: str
     players_out: list[str] = Field(default_factory=list)
     players_in: list[str] = Field(default_factory=list)
-    picks_out: list[str] = Field(default_factory=list)
-    picks_in: list[str] = Field(default_factory=list)
+    # A pick entry is either a plain draft_picks id (unprotected, as before) or
+    # {"pick_id", "protection_top_n"} for a protected round-1 pick.
+    picks_out: list[str | PickAssetBody] = Field(default_factory=list)
+    picks_in: list[str | PickAssetBody] = Field(default_factory=list)
 
 
 class RetirementBody(BaseModel):
@@ -237,6 +248,10 @@ def put_arrangement(slug: str, body: ArrangementBody, mgr: Manager = Depends(get
     return {"status": "ok", "team": slug}
 
 
+def _pick_arg(p: str | PickAssetBody) -> str | dict:
+    return p if isinstance(p, str) else {"pick_id": p.pick_id, "protection_top_n": p.protection_top_n}
+
+
 @app.post("/trades")
 def post_trade(body: TradeBody, mgr: Manager = Depends(get_current_manager)):
     _require_owns(mgr, body.from_team)
@@ -248,7 +263,8 @@ def post_trade(body: TradeBody, mgr: Manager = Depends(get_current_manager)):
         trade_id = ts.propose_trade(
             engine, body.from_team, body.to_team,
             players_out=body.players_out, players_in=body.players_in,
-            picks_out=body.picks_out, picks_in=body.picks_in,
+            picks_out=[_pick_arg(p) for p in body.picks_out],
+            picks_in=[_pick_arg(p) for p in body.picks_in],
             proposed_by=mgr.user_id, internal=internal,
         )
     except ts.TradeError as e:
