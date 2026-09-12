@@ -3,8 +3,16 @@ import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
-import { RosterColumns, PlayerRow, Alert, Button, Toast, EmptyState, DraftPickBoard } from "../ds";
+import { RosterColumns, PlayerRow, Alert, Button, Input, Toast, EmptyState, DraftPickBoard } from "../ds";
 import { ROLE_LABEL, ROLE_ORDER } from "../lib/coaches";
+import {
+  EligiblePlayer,
+  ExtensionReport,
+  extensionError,
+  extensionLabel,
+  offerExtension,
+  useExtensions,
+} from "../lib/contracts";
 
 const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"] as const;
 type Group = "starters" | "bench" | "reserves";
@@ -24,6 +32,11 @@ interface PP {
   defense: number;
   goalie_skill: number;
   is_injured: boolean;
+  // A signed extension (alembic 0016 put these on player_public). Who is locked up is
+  // not secret -- it is the most useful thing to know when proposing a trade -- so the
+  // badge shows on any team's roster, not just your own.
+  ext_term: number | null;
+  ext_value: number | null;
 }
 interface Arrangement {
   starters: Record<string, string[]>;
@@ -38,6 +51,7 @@ interface CapT {
   over_first_threshold: boolean; over_second_threshold: boolean;
   mid_level_exception: number; hard_cap_room: number;
   roster_size: number; max_roster: number;
+  projected_next_payroll: number; extension_window_open: boolean;
   limits: { salary_cap: number; hard_cap: number };
 }
 
@@ -143,6 +157,7 @@ function CapStrip({ cap }: { cap: CapT }) {
       : `${money(cap.cap_room)} cap room`,
     `MLE ${money(cap.mid_level_exception)}`,
     `${money(cap.hard_cap_room)} to the hard cap`,
+    `${money(cap.projected_next_payroll)} committed next season`,
     `Roster ${cap.roster_size}/${cap.max_roster}`,
   ];
   return (
@@ -154,6 +169,112 @@ function CapStrip({ cap }: { cap: CapT }) {
   );
 }
 
+// The extension board: who on this roster is in the last year of a deal, what the
+// biggest extension they may sign is, and the promises already made. Rendered only for
+// a team the viewer actually OWNS -- the endpoint behind it is ownership-gated, and
+// committing cap space is not a spectator action.
+//
+// The ceilings come from the server (handball/extensions.py): `max_term` is the
+// league's five-year maximum less the years still to run, `max_value` is the hard cap
+// against NEXT season's projected payroll, with every extension already signed counted
+// against it. Bird rights mean the soft cap does not appear here at all.
+function ExtensionBoard({
+  team, report, onSigned, onError,
+}: {
+  team: string;
+  report: ExtensionReport;
+  onSigned: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [draft, setDraft] = useState<Record<string, { term: string; value: string }>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const open = report.extension_window_open;
+
+  const entry = (p: EligiblePlayer) =>
+    draft[p.player_id] ?? { term: String(Math.min(2, p.max_term)), value: String(p.contract_value) };
+  const set = (id: string, patch: { term?: string; value?: string }) =>
+    setDraft((d) => ({ ...d, [id]: { ...(d[id] ?? { term: "", value: "" }), ...patch } }));
+
+  async function sign(p: EligiblePlayer) {
+    const { term, value } = entry(p);
+    setBusy(p.player_id);
+    try {
+      const res = await offerExtension(team, p.player_id, Number(term), Number(value));
+      onSigned(`${res.player_name} extended: ${res.term}y/$${res.value}M from ${res.starts_season}.`);
+    } catch (e) {
+      onError(extensionError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const money = (m: number) => `$${m}M`;
+  return (
+    <>
+      <h3 style={{ margin: "20px 0 8px" }}>Extensions</h3>
+      <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginBottom: 10 }}>
+        {open
+          ? `The extension window is open. ${money(report.projected_next_payroll)} of the ` +
+            `${money(report.hard_cap)} hard cap is already committed for ${report.season + 1}.`
+          : "The extension window is closed. It opens for one stretch of each season, " +
+            "and only a player in the last year of a contract may be extended."}
+      </div>
+
+      {report.extended.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: open ? 14 : 0 }}>
+          {report.extended.map((p) => (
+            <div key={p.player_id} style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: "var(--text-sm)" }}>
+              <span style={{ fontWeight: "var(--weight-bold)" }}>{p.name}</span>
+              <span style={{ color: "var(--muted)" }}>{p.position}</span>
+              <span style={{ fontFamily: "var(--font-mono)", color: "var(--stat-offense-text)" }}>
+                {extensionLabel(p.ext_term, p.ext_value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {open && report.players.length === 0 && report.extended.length === 0 && (
+        <span style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>
+          Nobody on this roster is in the last year of a contract.
+        </span>
+      )}
+
+      {open && report.players.map((p) => {
+        const { term, value } = entry(p);
+        const bad =
+          Number(term) < 1 || Number(term) > p.max_term ||
+          Number(value) < 0 || Number(value) > p.max_value;
+        return (
+          <div key={p.player_id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span style={{ fontWeight: "var(--weight-bold)", minWidth: 150 }}>{p.name}</span>
+            <span style={{ color: "var(--muted)", fontSize: "var(--text-sm)", fontFamily: "var(--font-mono)" }}>
+              {p.position} · last year at {money(p.contract_value)}
+            </span>
+            <Input size="sm" type="number" min={1} max={p.max_term} value={term}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set(p.player_id, { term: e.target.value })}
+              style={{ width: 70 }} aria-label={`${p.name} extension years`} />
+            <Input size="sm" type="number" min={0} max={p.max_value} value={value}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => set(p.player_id, { value: e.target.value })}
+              style={{ width: 90 }} aria-label={`${p.name} extension salary`} />
+            <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)", fontFamily: "var(--font-mono)" }}>
+              max {p.max_term}y / {money(p.max_value)}
+            </span>
+            <Button variant="primary" disabled={bad || busy !== null} onClick={() => void sign(p)}>
+              {busy === p.player_id ? "Signing…" : "Extend"}
+            </Button>
+          </div>
+        );
+      })}
+      {open && report.players.length > 0 && (
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)", marginTop: 4 }}>
+          An extension is binding: the salary starts next season and cannot be cancelled.
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function Roster() {
   // The "/teams/:slug" route views any team (read-only unless owned); the
   // "/roster" nav entry has no param and follows the TeamSwitcher selection.
@@ -161,6 +282,9 @@ export default function Roster() {
   const { isCommissioner, teams, activeTeam } = useAuth();
   const slug = paramSlug ?? activeTeam?.slug ?? "";
   const editable = isCommissioner || teams.some((t) => t.slug === slug);
+  // Extensions need REAL ownership, not the commissioner's edit bypass: the endpoint
+  // that signs one is strict about it (api/contracts.py), so the board is too.
+  const owned = teams.some((t) => t.slug === slug);
   const nav = useNavigate();
 
   const [players, setPlayers] = useState<PP[]>([]);
@@ -175,6 +299,7 @@ export default function Roster() {
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const { report: extensions, refresh: refreshExtensions } = useExtensions(slug, owned);
 
   const load = useCallback(async () => {
     setProblems([]);
@@ -242,6 +367,10 @@ export default function Roster() {
   );
 
   const byId = useMemo(() => new Map(players.map((p) => [p.legacy_id, p])), [players]);
+  const extended = useMemo(
+    () => players.filter((p) => p.ext_term != null && p.ext_value != null),
+    [players]
+  );
   const teamStats = useMemo(() => computeTeamStats(arr, byId), [arr, byId]);
   const dsPlayer = (id: string) => {
     const p = byId.get(id);
@@ -446,6 +575,30 @@ export default function Roster() {
           <Button onClick={() => setArr(buildArr(players))} disabled={saving}>Reset</Button>
         </div>
       )}
+
+      {owned && extensions ? (
+        <ExtensionBoard
+          team={slug}
+          report={extensions}
+          onSigned={(msg) => { setToast(msg); void refreshExtensions(); void load(); }}
+          onError={setErr}
+        />
+      ) : extended.length > 0 ? (
+        <>
+          <h3 style={{ margin: "20px 0 8px" }}>Extensions</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {extended.map((p) => (
+              <div key={p.legacy_id} style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: "var(--text-sm)" }}>
+                <span style={{ fontWeight: "var(--weight-bold)" }}>{p.name}</span>
+                <span style={{ color: "var(--muted)" }}>{p.position}</span>
+                <span style={{ fontFamily: "var(--font-mono)", color: "var(--stat-offense-text)" }}>
+                  {extensionLabel(p.ext_term as number, p.ext_value as number)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
 
       <h3 style={{ margin: "20px 0 8px" }}>Draft Picks</h3>
       <DraftPickBoard years={pickYears} picks={picks} />

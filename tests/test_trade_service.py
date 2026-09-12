@@ -28,8 +28,11 @@ except Exception:  # noqa: BLE001
 
 pytestmark = pytest.mark.skipif(not _PG_OK, reason="Postgres dev DB not available/migrated")
 
+# season_state is in the list because a trade now reads the league clock: the trade
+# deadline is a period count (handball/extensions.py), so a cursor left behind by
+# another test module would shut the market under every test in here.
 _TABLES = ("teams players injuries awards games player_game_lines "
-           "draft_picks managers trades trade_assets")
+           "draft_picks managers trades trade_assets season_state")
 
 
 @pytest.fixture(autouse=True)

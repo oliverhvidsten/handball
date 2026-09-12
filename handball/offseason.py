@@ -26,6 +26,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from handball.extensions import _apply_extensions
 from handball.pg_repository import PLAYER_SCALAR_COLS
 from handball.repository import _player_from_dict
 from handball.simulation_vars import DRAFT_ROUNDS, RETIREMENT_CANDIDATE_AGE
@@ -90,9 +91,9 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
     """Roll the league from `season` to `season + 1` in a single transaction:
     assign awards, seed next season's draft order (from the pre-reset standings in
     `ranked_team_ids`, best->worst), extend the 10-year future-pick placeholder
-    window by one year, age every non-retired player, move expired contracts to
-    free agency, zero team records, and open the new season. Returns a summary of
-    counts."""
+    window by one year, age every non-retired player, turn signed extensions into
+    contracts, move expired contracts to free agency, zero team records, and open the
+    new season. Returns a summary of counts."""
     new_season = season + 1
     with engine.begin() as conn:
         awards = _compute_awards(conn, season)
@@ -100,6 +101,12 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
         for future_season in range(new_season + 1, new_season + 11):
             _extend_future_picks(conn, future_season)
         aged = _age_all_players(conn)
+        # Extensions land BETWEEN aging and free agency, and that is the whole point:
+        # aging has just ticked the old deal to zero, and free agency is about to
+        # release everyone sitting there. An extended player is put on their new
+        # contract first, so the next statement doesn't see them. See
+        # handball/extensions.py.
+        extended = _apply_extensions(conn)
         freed = _process_free_agency(conn)
         teams_reset = _reset_team_records(conn)
         conn.execute(
@@ -112,6 +119,7 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
         "awards": awards,
         "draft_picks": picks,
         "players_aged": aged,
+        "extensions_applied": extended,
         "new_free_agents": freed,
         "teams_reset": teams_reset,
     }

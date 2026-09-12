@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
 import { TradeRow, TradePicker, EmptyState, Alert, Toast } from "../ds";
+import { useContractWindows } from "../lib/contracts";
 
 interface TeamLite { id: string; slug: string; name: string; }
 interface TradeT {
@@ -29,6 +30,12 @@ export default function Trades() {
   const [picksOut, setPicksOut] = useState<string[]>([]);
   const [picksIn, setPicksIn] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+
+  // The trade deadline (handball/extensions.py, via GET /contracts/windows). Once it
+  // has passed, nothing may be proposed or accepted until the next league year --
+  // approvals still go through, so the commissioner can clear the queue.
+  const windows = useContractWindows();
+  const deadlinePassed = windows?.trade_deadline_passed ?? false;
 
   const ownedIds = new Set(teams.map((t) => t.id));
   const teamById = (id: string) => allTeams.find((t) => t.id === id);
@@ -91,7 +98,7 @@ export default function Trades() {
   }
 
   async function propose() {
-    if (!activeTeam || !toSlug) return;
+    if (!activeTeam || !toSlug || deadlinePassed) return;
     setBusy(true);
     setErr(null);
     try {
@@ -117,7 +124,7 @@ export default function Trades() {
     const acts: { label: string; variant?: string; onClick: () => void }[] = [];
     const iOwnTo = ownedIds.has(t.to_team_id) || isCommissioner;
     const iOwnFrom = ownedIds.has(t.from_team_id) || isCommissioner;
-    if (t.status === "proposed" && iOwnTo) {
+    if (t.status === "proposed" && iOwnTo && !deadlinePassed) {
       acts.push({ label: "Accept", variant: "primary", onClick: () => act(`/trades/${t.id}/accept`, "Accepted.") });
       acts.push({ label: "Reject", variant: "danger", onClick: () => act(`/trades/${t.id}/reject`, "Rejected.") });
     }
@@ -139,7 +146,14 @@ export default function Trades() {
       <h2 style={{ marginBottom: 16 }}>Trades</h2>
       {err && <Alert tone="error" style={{ marginBottom: 14 }}>{err}</Alert>}
 
-      {activeTeam ? (
+      {deadlinePassed && (
+        <Alert tone="warning" title="The trade deadline has passed" style={{ marginBottom: 14 }}>
+          No trade can be proposed or accepted until the commissioner advances the season.
+          Trades already accepted can still be approved.
+        </Alert>
+      )}
+
+      {deadlinePassed ? null : activeTeam ? (
         <TradePicker
           myTeam={activeTeam.name}
           teamOptions={teamOptions}
