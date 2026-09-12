@@ -23,26 +23,7 @@ import Commissioner from "./pages/Commissioner";
 import Account from "./pages/Account";
 import { usePendingTradeCount, useYourTurnCount } from "./hooks";
 
-// `scope` partitions the nav: "team" pages re-render on the TeamSwitcher's
-// activeTeam selection (grouped with the switcher in the TopNav); "league"
-// pages are league-wide and ignore it.
-const NAV = [
-  { label: "Dashboard", to: "/dashboard", scope: "team" },
-  { label: "Roster", to: "/roster", scope: "team" },
-  { label: "Trades", to: "/trades", scope: "team" },
-  { label: "Free Agents", to: "/free-agents", scope: "team" },
-  { label: "Teams", to: "/teams", scope: "league" },
-  { label: "Players", to: "/players", scope: "league" },
-  { label: "Coaches", to: "/coaches", scope: "league" },
-  { label: "Standings", to: "/standings", scope: "league" },
-  { label: "Leaders", to: "/leaderboard", scope: "league" },
-  { label: "Schedule", to: "/schedule", scope: "league" },
-  { label: "Playoffs", to: "/playoffs", scope: "league" },
-  { label: "Draft", to: "/draft", scope: "league" },
-  { label: "Vote", to: "/vote", scope: "league" },
-  { label: "Awards", to: "/awards", scope: "league" },
-  { label: "Hall of Fame", to: "/hall-of-fame", scope: "league" },
-];
+import { NAV } from "./nav";
 
 export default function App() {
   const { session, isCommissioner, teams, activeTeam, setActiveTeam, signOut, loading } = useAuth();
@@ -60,6 +41,7 @@ export default function App() {
     label: n.to === "/free-agents" && yourTurn > 0 ? `${n.label} (${yourTurn})` : n.label,
     href: "#" + n.to,
     scope: n.scope,
+    group: n.group,
     active: loc.pathname.startsWith(n.to),
     onClick: (e: React.MouseEvent) => { e.preventDefault(); nav(n.to); },
   }));
@@ -68,6 +50,7 @@ export default function App() {
       label: "★ Commissioner",
       href: "#/commissioner",
       scope: "league",
+      group: undefined,
       active: loc.pathname.startsWith("/commissioner"),
       onClick: (e: React.MouseEvent) => { e.preventDefault(); nav("/commissioner"); },
     });
