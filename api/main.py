@@ -37,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from handball import all_star
 from handball import contract_admin
 from handball import free_agency as fa
 from handball import league_structure
@@ -49,6 +50,7 @@ from handball import signing_service as sign
 from handball import simulation_vars
 from handball import standings
 from handball import trade_service as ts
+from handball import voting
 from handball.domain import ArrangementError
 from handball.league import build_production_league_pg
 from handball.league_views import TeamArrangement
@@ -705,6 +707,13 @@ def run_period(
             season_readiness.assert_season_can_start(engine, season)
         except season_readiness.SeasonNotReady as e:
             raise HTTPException(status_code=409, detail={"problems": e.problems})
+    # The All-Star break falls after ALL_STAR_AFTER_PERIOD, so the second half does
+    # not start until the exhibition the managers voted for has actually been played.
+    if next_period == simulation_vars.ALL_STAR_AFTER_PERIOD + 1:
+        try:
+            all_star.assert_played(engine, season)
+        except all_star.AllStarError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
     # Flip to 'running' synchronously (so a double-click is rejected above), then
     # hand the heavy work to a background task that runs after the response.
@@ -968,6 +977,13 @@ def advance_season(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(
             status_code=409, detail="crown a champion before advancing the season"
         )
+    # The vote must be COMMITTED before the rollover, which zeroes the records and
+    # stats every ballot was cast against: an award not counted by now can never be
+    # counted at all.
+    try:
+        voting.assert_awards_tallied(engine, season)
+    except voting.VotingError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not _queue_clear():
         raise HTTPException(
             status_code=409, detail="clear the trade approval queue before advancing"
