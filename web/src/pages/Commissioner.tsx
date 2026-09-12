@@ -3,6 +3,9 @@ import { supabase } from "../lib/supabase";
 import { ApiError, apiFetch } from "../lib/api";
 import { TradeRow, EmptyState, Alert, Button, Toast } from "../ds";
 import { useFreeAgencyState } from "../lib/freeAgency";
+import DraftPanel from "../components/commissioner/DraftPanel";
+import VotingPanel from "../components/commissioner/VotingPanel";
+import HallOfFamePanel from "../components/commissioner/HallOfFamePanel";
 
 interface TeamLite { id: string; name: string; }
 interface TradeT { id: string; from_team_id: string; to_team_id: string; status: string; internal: boolean; }
@@ -36,6 +39,28 @@ interface SeasonState {
 }
 interface Blocker { check: string; subject: string; message: string; }
 interface Candidate { legacy_id: string; name: string; age: number; position: string; team_name: string | null; }
+// Bulk contract administration (handball/contract_admin.py). `expiring_next_rollover`
+// is the number that matters: how many rostered players the next rollover releases.
+interface ContractAudit {
+  rostered: number;
+  expiring_next_rollover: number;
+  restart_runnable: boolean;
+  restart_would_change?: number;
+  restart_expiring_next_rollover?: number;
+  restart_problems?: string[];
+}
+type BulkStrategy = "restart_expired" | "stagger_expired";
+
+interface BulkPlan {
+  strategy: BulkStrategy | "none";
+  seed: number | null;
+  changed: number;
+  unchanged: number;
+  expiring_before: number;
+  expiring_next_rollover: number;
+  expiry_cohorts: Record<string, number>;
+  payrolls: { team: string; before: number; after: number }[];
+}
 
 export default function Commissioner() {
   const { fa, refresh: refreshFa } = useFreeAgencyState();
@@ -43,6 +68,11 @@ export default function Commissioner() {
   const [queue, setQueue] = useState<TradeT[]>([]);
   const [season, setSeason] = useState<SeasonState | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [contracts, setContracts] = useState<ContractAudit | null>(null);
+  const [contractPlan, setContractPlan] = useState<BulkPlan | null>(null);
+  // Stagger is the default: a league where every deal restarts on the same day
+  // has a third of its players expiring together at the next rollover.
+  const [contractStrategy, setContractStrategy] = useState<BulkStrategy>("stagger_expired");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -74,6 +104,9 @@ export default function Commissioner() {
     } else {
       setCandidates([]);
     }
+    try {
+      setContracts(await apiFetch<ContractAudit>("/contracts/audit", { method: "GET" }));
+    } catch { setContracts(null); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -113,6 +146,41 @@ export default function Commissioner() {
       setToast(`Retired ${selected.size}.`);
       setSelected(new Set());
       await load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // The repair is two clicks on purpose: it rewrites every expired contract in the
+  // league, so the plan is shown (dry run) before anything is written. A stagger
+  // draws random counters, so the preview's seed is sent back on apply -- what was
+  // shown is exactly what gets written.
+  async function runContractRepair(dryRun: boolean) {
+    const path = dryRun ? "/contracts/bulk:preview" : "/contracts/bulk";
+    setErr(null);
+    setBusy(path);
+    try {
+      const plan = await apiFetch<BulkPlan>("/contracts/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          dry_run: dryRun,
+          strategy: contractStrategy,
+          seed: dryRun ? null : contractPlan?.seed ?? null,
+        }),
+      });
+      if (dryRun) {
+        setContractPlan(plan);
+      } else {
+        setContractPlan(null);
+        setToast(
+          contractStrategy === "stagger_expired"
+            ? `Staggered ${plan.changed} contract(s).`
+            : `Restarted ${plan.changed} contract(s).`,
+        );
+        await load();
+      }
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
     } finally {
@@ -245,6 +313,19 @@ export default function Commissioner() {
           )}
         </div>
       )}
+
+      {/* Award and All-Star voting. The panel knows its own phase (a ballot opens
+          itself once enough periods have run), so it sits with the run controls
+          rather than inside a seasonComplete branch. */}
+      {season && <VotingPanel season={season.season} onToast={setToast} />}
+
+      {/* The draft: lottery, prospect class, the room, and forcing a pick. Mounted
+          unconditionally because the draft's own phase decides whether there is
+          anything to show -- it renders nothing at all until the rollover has seeded
+          an order, then walks the commissioner through one step at a time. It cannot live in
+          the Offseason block below: that block is for a season that has FINISHED, and
+          a draft belongs to the one the rollover has just opened. */}
+      {season && <DraftPanel season={season.season} onToast={setToast} />}
 
       {/* -- postseason ----------------------------------------------------
           One round per click. Managers set lineups between rounds, which is the
@@ -379,6 +460,107 @@ export default function Commissioner() {
               {busy === "/season/advance" ? "Advancing…" : `Advance to season ${season!.season + 1}`}
             </Button>
           </div>
+
+          {/* The rest of the offseason: the Hall of Fame class, which belongs to the
+              window between the Final and the rollover. The draft panel is NOT here --
+              a draft belongs to the season the rollover has just opened, when
+              seasonComplete is false again; see where it is mounted above. */}
+          <HallOfFamePanel season={season!.season} onToast={setToast} />
+        </>
+      )}
+
+      {/* -- contracts -----------------------------------------------------
+          Rosters imported before contracts were modelled carry a years_remaining
+          nobody ever set, and the rollover releases everyone at or below zero. This
+          is the bulk repair (handball/contract_admin.py). Shown only when there is
+          something to say: a healthy league renders nothing here. */}
+      {contracts != null && contracts.expiring_next_rollover > 0 && (
+        <>
+          <h3 style={{ margin: "28px 0 10px" }}>Contracts</h3>
+          <Alert
+            tone={contracts.expiring_next_rollover === contracts.rostered ? "error" : "warning"}
+            title={`${contracts.expiring_next_rollover} of ${contracts.rostered} rostered players expire at the next rollover`}
+            style={{ marginBottom: 12 }}
+          >
+            {contracts.expiring_next_rollover === contracts.rostered
+              ? "That is every player in the league. Contracts imported before the contract model carry a countdown that was never set, and advancing the season would empty all 32 rosters."
+              : "Their contracts run out when the season advances, and they become free agents."}
+          </Alert>
+
+          {contracts.restart_runnable === false && (
+            <Alert
+              tone="error"
+              title="The bulk restart can't run as-is"
+              items={contracts.restart_problems ?? []}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+
+          {contracts.restart_runnable !== false && (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 12, fontSize: "var(--text-sm)" }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="contract-strategy"
+                  checked={contractStrategy === "stagger_expired"}
+                  onChange={() => { setContractStrategy("stagger_expired"); setContractPlan(null); }}
+                />
+                Stagger: each expired deal restarts 1 to N years from its end, N being its length
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input
+                  type="radio"
+                  name="contract-strategy"
+                  checked={contractStrategy === "restart_expired"}
+                  onChange={() => { setContractStrategy("restart_expired"); setContractPlan(null); }}
+                />
+                Restart: every expired deal starts over at its full length
+              </label>
+            </div>
+          )}
+
+          {contractPlan && (
+            <Alert tone="info" title="Preview — nothing has been written" style={{ marginBottom: 12 }}>
+              {contractPlan.strategy === "stagger_expired" ? "Staggers" : "Restarts"} {contractPlan.changed} contract(s),
+              keeping every term and salary as they are, and leaving {contractPlan.unchanged} untouched.
+              Players expiring at the next rollover: {contractPlan.expiring_before} → {contractPlan.expiring_next_rollover}.
+              {contractPlan.payrolls.length === 0
+                ? " No team's payroll changes."
+                : ` ${contractPlan.payrolls.length} team payroll(s) change.`}
+              <div style={{ marginTop: 6, color: "var(--muted)" }}>
+                Years remaining afterwards:{" "}
+                {Object.entries(contractPlan.expiry_cohorts)
+                  .sort(([a], [b]) => Number(a) - Number(b))
+                  .map(([y, n]) => `${y}y: ${n}`)
+                  .join(" · ")}
+                {contractPlan.seed != null && ` · draw #${contractPlan.seed}`}
+              </div>
+            </Alert>
+          )}
+
+          {contracts.restart_runnable !== false && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button
+                disabled={busy != null}
+                onClick={() => void runContractRepair(true)}
+              >
+                {busy === "/contracts/bulk:preview"
+                  ? "Checking…"
+                  : contractPlan ? "Preview again (new draw)" : "Preview repair"}
+              </Button>
+              {contractPlan && (
+                <Button
+                  variant="primary"
+                  disabled={busy != null}
+                  onClick={() => void runContractRepair(false)}
+                >
+                  {busy === "/contracts/bulk"
+                    ? "Applying…"
+                    : `${contractPlan.strategy === "stagger_expired" ? "Stagger" : "Restart"} ${contractPlan.changed} contract(s)`}
+                </Button>
+              )}
+            </div>
+          )}
         </>
       )}
 

@@ -12,6 +12,7 @@ from sqlalchemy import text
 from handball.db import get_engine, is_local_db
 from handball.domain import Player, Team
 from handball.pg_repository import PostgresTeamRepository
+from handball.simulation_vars import FA_TURN_LIMIT_HOURS as _FA_TURN_LIMIT_HOURS
 
 try:
     _engine = get_engine()
@@ -30,7 +31,9 @@ if _PG_OK:
 
 _TABLES = ("teams players injuries awards games player_game_lines "
            "draft_picks managers trades trade_assets fa_periods fa_rounds "
-           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series")
+           "fa_auctions fa_offers fa_auction_seats fa_actions playoff_series "
+           "ballots voting_status award_tallies all_star_games "
+           "draft_lotteries draft_state draft_prospects hall_of_fame")
 
 
 @pytest.fixture(autouse=True)
@@ -334,6 +337,92 @@ def test_bidding_out_of_turn_is_a_conflict(client, two_teams):
     assert "not your turn" in r.json()["detail"]
 
 
+def _two_offer_board(client) -> int:
+    """Boston $20M / Denver $10M on fa-1, round closed -> Denver on the clock."""
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    client.post("/free-agency/offers",
+                json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 20})
+    _as_manager("Denver")
+    client.post("/free-agency/offers",
+                json={"team": "Denver", "player_id": "fa-1", "term": 3, "value": 10})
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/rounds/close")
+    return client.get("/free-agency/state").json()["auctions"][0]["id"]
+
+
+def test_a_rival_cannot_read_sealed_offers_from_the_state_document(client, two_teams):
+    """The sealed round is the whole mechanism. A board is created by the first offer,
+    so it exists while the round is still collecting -- and must not be served."""
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    client.post("/free-agency/offers",
+                json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 20})
+
+    _as_manager("Denver")                            # a rival, mid-round
+    state = client.get("/free-agency/state").json()
+    assert state["auctions"] == []
+    assert [t["offers"] for t in state["teams"]] == [[]]      # and none of Boston's
+
+
+def test_reading_the_state_sweeps_an_expired_turn(client, two_teams):
+    """There is no scheduler: the poll is the clock. A manager who has sat on their
+    turn past the limit is forfeited by the next read, whoever makes it."""
+    auction_id = _two_offer_board(client)
+    with _engine.begin() as c:
+        c.execute(text("update fa_auctions set waiting_since = "
+                       "now() - make_interval(hours => :h) where id = :a"),
+                  {"h": _FA_TURN_LIMIT_HOURS + 1, "a": auction_id})
+
+    _as_manager("Boston")                            # not the stalling team
+    state = client.get("/free-agency/state").json()
+    assert [s["team"] for s in state["swept"]] == ["Denver"]
+    # One team left, so the board resolved to Boston rather than waiting.
+    assert state["auctions"] == []
+    with _engine.connect() as c:
+        assert c.execute(text("select t.slug from players p join teams t on t.id=p.team_id "
+                              "where p.legacy_id='fa-1'")).scalar() == "Boston"
+
+
+def test_a_turn_inside_the_limit_survives_a_read(client, two_teams):
+    auction_id = _two_offer_board(client)
+    _as_manager("Boston")
+    state = client.get("/free-agency/state").json()
+    assert state["swept"] == []
+    board = [a for a in state["auctions"] if a["id"] == auction_id][0]
+    assert board["turn_team"] == "Denver"
+    assert board["turn_seconds_left"] > 0
+
+
+def test_history_serves_the_closed_round_to_any_manager(client, two_teams):
+    auction_id = _two_offer_board(client)
+    _as_manager("Denver")
+    client.post(f"/free-agency/auctions/{auction_id}/bid",
+                json={"team": "Denver", "action": "forfeit"})
+
+    _as_manager("Boston")
+    body = client.get("/free-agency/history").json()
+    assert len(body["boards"]) == 1
+    entry = body["boards"][0]
+    assert entry["winning_team"] == "Boston" and entry["signed_value"] == 20
+    assert {o["team"]: o["value"] for o in entry["offers"]} == {"Boston": 20, "Denver": 10}
+
+
+def test_history_is_empty_while_the_round_is_still_sealed(client, two_teams):
+    _free_agent("fa-1")
+    _as_manager("", role="commissioner")
+    client.post("/free-agency/periods")
+    _as_manager("Boston")
+    client.post("/free-agency/offers",
+                json={"team": "Boston", "player_id": "fa-1", "term": 3, "value": 20})
+    _as_manager("Denver")
+    assert client.get("/free-agency/history").json()["boards"] == []
+
+
 def test_the_pool_is_closed_while_free_agency_runs(client, two_teams):
     _free_agent("fa-1")
     _as_manager("", role="commissioner")
@@ -445,6 +534,221 @@ def test_an_open_free_agency_blocks_the_first_period(client, two_teams):
     r = client.post("/periods/run")
     assert r.status_code == 409
     assert any("Free agency" in p for p in r.json()["detail"]["problems"])
+
+
+# -- bulk contract administration ------------------------------------------
+def _expire_all_contracts(years: int = -6, term: int = 3, value: int = 8) -> None:
+    """The state this tool exists for: counters that were never initialised and have
+    been ticked down every offseason since."""
+    with _engine.begin() as c:
+        c.execute(text("update players set years_remaining = :y, contract_term = :t, "
+                       "contract_value = :v where team_id is not null"),
+                  {"y": years, "t": term, "v": value})
+
+
+def test_contracts_audit_reports_what_the_rollover_would_do(client, two_teams):
+    _expire_all_contracts()
+    _as_manager("", role="commissioner")
+    body = client.get("/contracts/audit").json()
+    assert body["rostered"] == 38                       # 19 per team
+    assert body["expiring_next_rollover"] == 38         # ...every one of them
+    assert body["restart_runnable"] is True
+    assert body["restart_would_change"] == 38
+    assert body["restart_expiring_next_rollover"] == 0  # 3-year deals, so none
+
+
+def test_contracts_audit_requires_a_commissioner(client, two_teams):
+    _as_manager("Boston")
+    assert client.get("/contracts/audit").status_code == 403
+
+
+def test_bulk_contracts_dry_run_writes_nothing(client, two_teams):
+    _expire_all_contracts()
+    _as_manager("", role="commissioner")
+    r = client.post("/contracts/bulk", json={})          # dry_run defaults to true
+    assert r.status_code == 200, r.text
+    assert r.json()["dry_run"] is True and r.json()["changed"] == 38
+
+    with _engine.connect() as c:
+        assert c.execute(text("select count(*) from players where years_remaining > 0")
+                         ).scalar() == 0                 # nothing written
+
+
+def test_bulk_contracts_restarts_every_expired_counter(client, two_teams):
+    _expire_all_contracts(years=-6, term=3, value=8)
+    _as_manager("", role="commissioner")
+    r = client.post("/contracts/bulk", json={"dry_run": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] == 38
+
+    with _engine.connect() as c:
+        rows = c.execute(text("select years_remaining, contract_term, contract_value "
+                              "from players where team_id is not null")).all()
+    assert {r[0] for r in rows} == {3}                   # restarted at the term
+    assert {(r[1], r[2]) for r in rows} == {(3, 8)}      # deal itself untouched
+
+
+def test_bulk_contracts_stagger_previews_a_seed_and_applies_it_verbatim(client, two_teams):
+    """A stagger draws random counters. The dry run picks the seed and echoes it; the
+    apply that passes it back must write exactly the plan that was shown."""
+    _expire_all_contracts(years=-6, term=4, value=8)
+    _as_manager("", role="commissioner")
+    preview = client.post("/contracts/bulk", json={"strategy": "stagger_expired"})
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["dry_run"] is True and body["strategy"] == "stagger_expired"
+    assert isinstance(body["seed"], int) and body["changed"] == 38
+    shown = {c["player_id"]: c["years_remaining"]["after"] for c in body["changes"]}
+    assert all(1 <= y <= 4 for y in shown.values())
+
+    applied = client.post("/contracts/bulk", json={
+        "strategy": "stagger_expired", "seed": body["seed"], "dry_run": False,
+    })
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["seed"] == body["seed"]
+
+    with _engine.connect() as c:
+        rows = c.execute(text("select legacy_id, years_remaining, contract_term, "
+                              "contract_value from players where team_id is not null")).all()
+    assert {r[0]: r[1] for r in rows} == shown           # what was shown is what landed
+    assert {(r[2], r[3]) for r in rows} == {(4, 8)}      # deal itself untouched
+
+
+def test_bulk_contracts_does_not_disturb_rookie_or_restricted_status(client, two_teams):
+    """A repair fixes a counter. update_contract clears both flags when told a deal
+    is not a rookie one, so the bulk path must not let that leak."""
+    _expire_all_contracts()
+    with _engine.begin() as c:
+        c.execute(text("update players set rookie_contract = true, "
+                       "restricted_free_agent = true where legacy_id = 'boston-f1'"))
+    _as_manager("", role="commissioner")
+    assert client.post("/contracts/bulk", json={"dry_run": False}).status_code == 200
+
+    with _engine.connect() as c:
+        row = c.execute(text("select rookie_contract, restricted_free_agent, "
+                             "years_remaining from players where legacy_id='boston-f1'")
+                        ).one()
+    assert row == (True, True, 3)
+
+
+def test_bulk_contracts_applies_an_override(client, two_teams):
+    _expire_all_contracts()
+    _as_manager("", role="commissioner")
+    r = client.post("/contracts/bulk", json={
+        "dry_run": False,
+        "overrides": [{"player_id": "boston-f1", "term": 5, "value": 30}],
+    })
+    assert r.status_code == 200, r.text
+    with _engine.connect() as c:
+        assert c.execute(text("select contract_term, contract_value, years_remaining "
+                              "from players where legacy_id='boston-f1'")).one() == (5, 30, 5)
+
+
+def test_bulk_contracts_rejects_an_illegal_override_and_writes_nothing(client, two_teams):
+    _expire_all_contracts()
+    _as_manager("", role="commissioner")
+    r = client.post("/contracts/bulk", json={
+        "dry_run": False,
+        "overrides": [{"player_id": "nobody", "term": 2, "value": 5}],
+    })
+    assert r.status_code == 400
+    assert any("no such player" in p for p in r.json()["detail"]["problems"])
+    with _engine.connect() as c:
+        assert c.execute(text("select count(*) from players where years_remaining > 0")
+                         ).scalar() == 0                 # the whole plan was refused
+
+
+def test_bulk_contracts_requires_a_commissioner(client, two_teams):
+    _as_manager("Boston")
+    assert client.post("/contracts/bulk", json={}).status_code == 403
+
+
+def test_bulk_contracts_refused_while_a_period_is_simulating(client, two_teams):
+    _seed_one_week_schedule()
+    with _engine.begin() as c:
+        c.execute(text("update season_state set run_status='running', updated_at=now() "
+                       "where season=:s"), {"s": _SEASON})
+    _as_manager("", role="commissioner")
+    r = client.post("/contracts/bulk", json={})
+    assert r.status_code == 409 and "simulating" in r.json()["detail"]
+
+
+def test_a_repaired_league_survives_the_rollover(client, two_teams):
+    """The end-to-end point of the tool: with counters restarted, the offseason
+    rollover leaves the rosters alone instead of emptying them."""
+    from handball import offseason
+
+    _expire_all_contracts(years=-6, term=3, value=8)
+    _as_manager("", role="commissioner")
+    assert client.post("/contracts/bulk", json={"dry_run": False}).status_code == 200
+
+    with _engine.begin() as c:
+        freed = offseason._process_free_agency(c)
+    assert freed == 0
+    with _engine.connect() as c:
+        assert c.execute(text("select count(*) from players where team_id is not null")
+                         ).scalar() == 38
+
+
+def test_roster_legality_reads_a_real_league_as_ready(client, two_teams):
+    """The positive half of the roster check, and the only thing that proves
+    load_league_state() actually reads rosters: two fully-stocked, fully-placed
+    teams must produce no blocker -- an empty read would pass a weaker assertion."""
+    from handball.season_readiness import load_league_state
+
+    from handball.league_views import DEFAULT_RULES
+
+    state = load_league_state(_engine, _SEASON)
+    assert {r.name for r in state.rosters} == {"Boston", "Denver"}
+    for roster in state.rosters:
+        # 3 start + 2 bench everywhere, +1 reserve at Forward and Defense; 1+1 Goalie.
+        assert roster.by_position == {"Forward": 6, "Midfielder": 5,
+                                      "Defense": 6, "Goalie": 2}
+        assert roster.shortfalls(DEFAULT_RULES) == []
+        assert roster.reserves(DEFAULT_RULES) == 2
+        assert roster.unplaced == 0
+
+    _seed_one_week_schedule()
+    _as_manager("", role="commissioner")
+    assert client.get("/season/state").json()["season_ready"] is True
+
+
+def test_a_team_short_a_position_blocks_the_first_period(client, two_teams):
+    """Retiring both goalies is the ordinary end-of-offseason hole: the roster is
+    still there, it just can't be arranged. Retirement clears team_id, so the
+    players leave the roster count entirely."""
+    with _engine.begin() as c:
+        c.execute(text("update players set retired = true, team_id = null, "
+                       "slot_group = null, slot_position = null, slot_order = null "
+                       "where position = 'Goalie' and legacy_id like 'boston-%'"))
+    _seed_one_week_schedule()
+    _as_manager("", role="commissioner")
+
+    state = client.get("/season/state").json()
+    assert state["season_ready"] is False
+    found = [b for b in state["season_blockers"] if b["check"] == "roster_legality"]
+    assert len(found) == 1 and found[0]["subject"] == "Boston"
+    assert found[0]["detail"]["shortfalls"] == [{"position": "Goalie", "have": 0, "needs": 2}]
+
+    r = client.post("/periods/run")
+    assert r.status_code == 409
+    assert any("cannot field a legal lineup" in p for p in r.json()["detail"]["problems"])
+
+
+def test_an_unplaced_player_blocks_the_first_period(client, two_teams):
+    """A signing into an incomplete roster stays unplaced (try_rebuild_layout is
+    best-effort); once the roster is whole, that player is still not in the lineup."""
+    with _engine.begin() as c:
+        c.execute(text("update players set slot_group = null, slot_position = null, "
+                       "slot_order = null where legacy_id = 'boston-f5'"))
+    _seed_one_week_schedule()
+    _as_manager("", role="commissioner")
+
+    found = [b for b in client.get("/season/state").json()["season_blockers"]
+             if b["check"] == "roster_legality"]
+    assert len(found) == 1 and found[0]["subject"] == "Boston"
+    assert found[0]["detail"]["unplaced"] == 1
+    assert "not in its lineup" in found[0]["message"]
 
 
 def test_run_period_rejects_concurrent_run(client, two_teams):

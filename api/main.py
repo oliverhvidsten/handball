@@ -28,6 +28,7 @@ manager↔team ownership + the commissioner role.
 """
 from __future__ import annotations
 
+import secrets
 import os
 import threading
 import urllib.request
@@ -37,6 +38,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from handball import all_star
+from handball import contract_admin
+from handball import draft
 from handball import free_agency as fa
 from handball import league_structure
 from handball import offseason
@@ -48,7 +52,7 @@ from handball import signing_service as sign
 from handball import simulation_vars
 from handball import standings
 from handball import trade_service as ts
-from handball.db import get_engine
+from handball import voting
 from handball.domain import ArrangementError
 from handball.league import build_production_league_pg
 from handball.league_views import TeamArrangement
@@ -56,6 +60,19 @@ from handball.pg_repository import PostgresTeamRepository
 from handball.season import PERIODS
 
 from api.auth import Manager, get_current_manager
+from api.contracts import router as contracts_router
+from api.deps import (
+    active_season,
+    engine,
+    queue_clear,
+    require_commissioner,
+    require_owns,
+    require_owns_strict,
+    team_uuid,
+)
+from api.draft import router as draft_router
+from api.hall_of_fame import router as hall_of_fame_router
+from api.voting import router as voting_router
 
 app = FastAPI(title="NHA API")
 
@@ -73,8 +90,14 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
-engine = get_engine()
 repo = PostgresTeamRepository(engine)
+
+# The feature routers. Each is owned by one Phase 1 agent and is empty until then;
+# they are mounted now so nobody has to come back and edit this file to add a route.
+app.include_router(draft_router)
+app.include_router(voting_router)
+app.include_router(contracts_router)
+app.include_router(hall_of_fame_router)
 
 
 # -- request bodies --------------------------------------------------------
@@ -84,13 +107,24 @@ class ArrangementBody(BaseModel):
     reserves: list[str]
 
 
+class PickAssetBody(BaseModel):
+    """A pick asset that carries a protection agreed at trade time (handball/
+    hall_of_fame agent's trade_service addition). round-1-only and 1-32 are
+    re-checked in trade_service, which has the pick row; the bounds here only
+    keep nonsense out of the request."""
+    pick_id: str
+    protection_top_n: int | None = Field(default=None, ge=1, le=32)
+
+
 class TradeBody(BaseModel):
     from_team: str
     to_team: str
     players_out: list[str] = Field(default_factory=list)
     players_in: list[str] = Field(default_factory=list)
-    picks_out: list[str] = Field(default_factory=list)
-    picks_in: list[str] = Field(default_factory=list)
+    # A pick entry is either a plain draft_picks id (unprotected, as before) or
+    # {"pick_id", "protection_top_n"} for a protected round-1 pick.
+    picks_out: list[str | PickAssetBody] = Field(default_factory=list)
+    picks_in: list[str | PickAssetBody] = Field(default_factory=list)
 
 
 class RetirementBody(BaseModel):
@@ -127,6 +161,25 @@ class TeamActionBody(BaseModel):
     reason: str | None = None
 
 
+class ContractOverrideBody(BaseModel):
+    """One explicit (re)assignment in a bulk contract change. Bounds here only keep
+    nonsense out of the query; the league limits are salary_cap.validate_contract."""
+    player_id: str
+    term: int = Field(ge=1)
+    value: int = Field(ge=0)
+
+
+class BulkContractBody(BaseModel):
+    """A commissioner bulk contract change (handball/contract_admin.py). Defaults to
+    a dry run: the plan comes back either way, and only `dry_run: false` writes it."""
+    strategy: str = Field(default=contract_admin.RESTART)
+    overrides: list[ContractOverrideBody] = Field(default_factory=list)
+    dry_run: bool = True
+    # The stagger strategy's draw. Omit it on a preview and the server picks one
+    # and echoes it in the plan; pass that value back to apply exactly what was shown.
+    seed: int | None = None
+
+
 class SigningBody(BaseModel):
     """A free-agent signing: who, and onto which team. No contract fields -- every
     free-agent deal is the same fixed league-minimum contract
@@ -137,12 +190,14 @@ class SigningBody(BaseModel):
 
 
 # -- helpers ---------------------------------------------------------------
-def _team_uuid(slug: str) -> str:
-    with engine.connect() as conn:
-        row = conn.execute(text("select id from teams where slug = :s"), {"s": slug}).first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"no team {slug!r}")
-    return str(row[0])
+# The shared ones live in api/deps.py so the feature routers can use them too; these
+# aliases keep every call site in this file (and the tests) reading as it always did.
+_team_uuid = team_uuid
+_require_owns = require_owns
+_require_commissioner = require_commissioner
+_require_owns_strict = require_owns_strict
+_active_season = active_season
+_queue_clear = queue_clear
 
 
 def _trade_team_slugs(trade_id: str) -> tuple[str, str]:
@@ -159,28 +214,6 @@ def _trade_team_slugs(trade_id: str) -> tuple[str, str]:
     return row["f"], row["t"]
 
 
-def _require_owns(mgr: Manager, slug: str) -> None:
-    if mgr.is_commissioner:
-        return
-    if not mgr.owns(_team_uuid(slug)):
-        raise HTTPException(status_code=403, detail="not your team")
-
-
-def _require_commissioner(mgr: Manager) -> None:
-    if not mgr.is_commissioner:
-        raise HTTPException(status_code=403, detail="commissioner only")
-
-
-def _require_owns_strict(mgr: Manager, slug: str) -> None:
-    """Ownership WITHOUT the commissioner bypass _require_owns grants. In a sealed-bid
-    auction the commissioner is also a manager with teams of their own; letting them
-    submit offers or bid as anybody would be a hole, not a convenience. Their powers
-    over the market are the explicit ones -- close a round, force a forfeit, award a
-    deadlock -- each of which is logged as a commissioner action."""
-    if not mgr.owns(_team_uuid(slug)):
-        raise HTTPException(status_code=403, detail="not your team")
-
-
 def _owned_teams(mgr: Manager) -> list[dict]:
     """The manager's teams as {id, slug, name}. A manager may own several, so every
     "is it my turn?" question is asked across all of them."""
@@ -193,30 +226,6 @@ def _owned_teams(mgr: Manager) -> list[dict]:
             {"ids": [str(t) for t in mgr.owned_team_ids]},
         ).mappings().all()
     return [dict(r) for r in rows]
-
-
-# Season the run controls manage. "Advance season" (a NEW season year) is out of
-# scope, so the active season is simply the one season_state knows about, else the
-# latest season with games, else a sensible default for a fresh league.
-DEFAULT_SEASON = 2026
-
-
-def _active_season() -> int:
-    with engine.connect() as conn:
-        row = conn.execute(text("select max(season) from season_state")).first()
-        if row and row[0] is not None:
-            return int(row[0])
-        row = conn.execute(text("select max(season) from games")).first()
-    return int(row[0]) if row and row[0] is not None else DEFAULT_SEASON
-
-
-def _queue_clear() -> bool:
-    """No accepted-but-unapproved trades are sitting in the commissioner queue."""
-    with engine.connect() as conn:
-        n = conn.execute(
-            text("select count(*) from trades where status = 'accepted'")
-        ).scalar_one()
-    return n == 0
 
 
 # -- endpoints -------------------------------------------------------------
@@ -246,6 +255,10 @@ def put_arrangement(slug: str, body: ArrangementBody, mgr: Manager = Depends(get
     return {"status": "ok", "team": slug}
 
 
+def _pick_arg(p: str | PickAssetBody) -> str | dict:
+    return p if isinstance(p, str) else {"pick_id": p.pick_id, "protection_top_n": p.protection_top_n}
+
+
 @app.post("/trades")
 def post_trade(body: TradeBody, mgr: Manager = Depends(get_current_manager)):
     _require_owns(mgr, body.from_team)
@@ -257,7 +270,8 @@ def post_trade(body: TradeBody, mgr: Manager = Depends(get_current_manager)):
         trade_id = ts.propose_trade(
             engine, body.from_team, body.to_team,
             players_out=body.players_out, players_in=body.players_in,
-            picks_out=body.picks_out, picks_in=body.picks_in,
+            picks_out=[_pick_arg(p) for p in body.picks_out],
+            picks_in=[_pick_arg(p) for p in body.picks_in],
             proposed_by=mgr.user_id, internal=internal,
         )
     except ts.TradeError as e:
@@ -319,6 +333,42 @@ def team_cap(slug: str, mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+# -- bulk contract administration ------------------------------------------
+# The commissioner's repair path for rosters that predate the contract model. See
+# handball/contract_admin.py for why a league can need it at all.
+@app.get("/contracts/audit")
+def contracts_audit(mgr: Manager = Depends(get_current_manager)):
+    """What the league's contracts look like, and what the next rollover would do to
+    them. Read-only, and the thing to look at before deciding whether a bulk change
+    is needed. Commissioner-only: it is a whole-league view of every deal."""
+    _require_commissioner(mgr)
+    return contract_admin.audit(engine)
+
+
+@app.post("/contracts/bulk")
+def contracts_bulk(body: BulkContractBody, mgr: Manager = Depends(get_current_manager)):
+    """(Re)assign contract terms in bulk. Returns the PLAN -- every before/after, the
+    payrolls it moves, and how many players the next rollover would then release --
+    and applies it only when `dry_run` is false.
+
+    Refused while a period is simulating, for the same reason a signing is: the
+    simulation loads each team once, and rewriting contracts underneath a half-played
+    season is not something the run would notice."""
+    _require_commissioner(mgr)
+    _require_no_run_in_flight()
+    overrides = [contract_admin.Override(player_id=o.player_id, term=o.term, value=o.value)
+                 for o in body.overrides]
+    seed = body.seed
+    if seed is None and body.strategy == contract_admin.STAGGER:
+        seed = secrets.randbelow(2**31)
+    run = contract_admin.plan if body.dry_run else contract_admin.apply_bulk
+    try:
+        plan = run(engine, strategy=body.strategy, overrides=overrides, seed=seed)
+    except contract_admin.BulkContractError as e:
+        raise HTTPException(status_code=400, detail={"problems": e.problems})
+    return {"dry_run": body.dry_run, **plan.as_dict()}
+
+
 @app.post("/signings")
 def post_signing(body: SigningBody, mgr: Manager = Depends(get_current_manager)):
     """Sign a free agent to the fixed league-minimum deal (1 year, $0M). No
@@ -359,6 +409,12 @@ def open_free_agency(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(
             status_code=409,
             detail="the season is already under way; free agency belongs to the offseason")
+    # The draft comes first in the offseason: a manager cannot know what holes they
+    # are signing to fill until they know which ones their picks filled.
+    try:
+        draft.assert_complete(engine, season)
+    except draft.DraftError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return _fa_action(fa.open_period, engine, season, actor=mgr.user_id)
 
 
@@ -457,8 +513,15 @@ def free_agency_state(mgr: Manager = Depends(get_current_manager)):
     boards waiting on them. `period` is null when no market is open, which is the
     signal to render the ordinary pool page.
 
-    Sealed offers stay sealed: a manager gets their OWN offers here, and the boards
-    only exist once the round that produced them has closed."""
+    Sealed offers stay sealed: a manager gets their OWN offers here, and a board is
+    withheld until the round that produced it has closed (fa.PUBLIC_AUCTION_STATUSES).
+
+    Reading also ADVANCES THE TURN CLOCK. There is no scheduler here, and the page
+    polls this endpoint while a board is live, so the sweep rides along with it: any
+    team that has sat on its turn past the limit is forfeited before the state is
+    read, which is what stops one unresponsive manager halting the round. It is a
+    single indexed lookup when nothing is overdue."""
+    swept = fa.sweep_expired_turns(engine)
     state = fa.free_agency_state(engine)
     teams = []
     waiting = 0
@@ -480,7 +543,16 @@ def free_agency_state(mgr: Manager = Depends(get_current_manager)):
             "action_required": actions,
         })
     return {**state, "teams": teams, "your_turn_count": waiting,
-            "is_commissioner": mgr.is_commissioner}
+            "is_commissioner": mgr.is_commissioner, "swept": swept}
+
+
+@app.get("/free-agency/history")
+def free_agency_history(season: int | None = None,
+                        mgr: Manager = Depends(get_current_manager)):
+    """Who bid what on every board that has finished -- the public record of a closed
+    round, losing offers included. Readable by any authenticated manager: a board only
+    appears here once it has resolved, by which time nothing on it is sealed."""
+    return fa.period_history(engine, season)
 
 
 # -- season simulation -----------------------------------------------------
@@ -665,6 +737,13 @@ def run_period(
             season_readiness.assert_season_can_start(engine, season)
         except season_readiness.SeasonNotReady as e:
             raise HTTPException(status_code=409, detail={"problems": e.problems})
+    # The All-Star break falls after ALL_STAR_AFTER_PERIOD, so the second half does
+    # not start until the exhibition the managers voted for has actually been played.
+    if next_period == simulation_vars.ALL_STAR_AFTER_PERIOD + 1:
+        try:
+            all_star.assert_played(engine, season)
+        except all_star.AllStarError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
     # Flip to 'running' synchronously (so a double-click is rejected above), then
     # hand the heavy work to a background task that runs after the response.
@@ -928,6 +1007,13 @@ def advance_season(mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(
             status_code=409, detail="crown a champion before advancing the season"
         )
+    # The vote must be COMMITTED before the rollover, which zeroes the records and
+    # stats every ballot was cast against: an award not counted by now can never be
+    # counted at all.
+    try:
+        voting.assert_awards_tallied(engine, season)
+    except voting.VotingError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not _queue_clear():
         raise HTTPException(
             status_code=409, detail="clear the trade approval queue before advancing"

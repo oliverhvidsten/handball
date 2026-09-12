@@ -6,6 +6,8 @@ DB-free in tests/test_free_agency_rules.py.
 
 Skips when Postgres is unavailable; local DB only (truncates).
 """
+import json
+
 import pytest
 from sqlalchemy import text
 
@@ -15,6 +17,7 @@ from handball import signing_service as signing
 from handball.db import get_engine, is_local_db
 from handball.domain import Player, Team
 from handball.pg_repository import PostgresTeamRepository
+from handball.simulation_vars import FA_TURN_LIMIT_HOURS
 
 try:
     _engine = get_engine()
@@ -535,3 +538,184 @@ def test_every_action_is_logged_for_the_commissioner(board):
     actions = [r[0] for r in rows]
     assert "period_opened" in actions and "round_closed" in actions
     assert ("bid_forfeit", True) in [(r[0], r[1]) for r in rows]
+
+
+# -- sealing -----------------------------------------------------------------
+# A board is created by the FIRST offer on a player, so it exists (as 'collecting')
+# throughout the sealed round. Everything on it, and the fact of it, is sealed.
+def test_offers_are_not_public_while_the_round_is_still_taking_them(league):
+    _open()
+    _free_agent("fa-1")
+    fa.submit_offer(_engine, "Boston", "fa-1", 3, 20)
+    fa.submit_offer(_engine, "Denver", "fa-1", 3, 10)
+
+    state = fa.free_agency_state(_engine)
+    assert state["round"]["status"] == "offers"
+    assert state["auctions"] == []          # not the board, not even that it exists
+
+
+def test_a_board_becomes_public_the_moment_its_round_closes(league):
+    _open()
+    _free_agent("fa-1")
+    fa.submit_offer(_engine, "Boston", "fa-1", 3, 20)
+    fa.submit_offer(_engine, "Denver", "fa-1", 3, 10)
+    fa.close_offer_round(_engine)
+
+    boards = fa.free_agency_state(_engine)["auctions"]
+    assert len(boards) == 1
+    assert sorted(o["value"] for o in boards[0]["offers"]) == [10, 20]
+
+
+def test_a_manager_still_sees_their_own_sealed_offers(league):
+    """Withholding the board must not withhold your own promises -- team_offers is
+    what the page renders 'you have offered' from."""
+    _open()
+    _free_agent("fa-1")
+    fa.submit_offer(_engine, "Boston", "fa-1", 3, 20)
+    assert [o["value"] for o in fa.team_offers(_engine, "Boston")] == [20]
+    assert fa.team_offers(_engine, "Denver") == []
+
+
+# -- the turn clock ----------------------------------------------------------
+def _age_turn(auction_id: int, hours: int) -> None:
+    """Backdate a board's waiting_since, as if the team on the clock had sat on it."""
+    with _engine.begin() as c:
+        c.execute(text("update fa_auctions set waiting_since = "
+                       "now() - make_interval(hours => :h) where id = :a"),
+                  {"h": hours, "a": auction_id})
+
+
+def test_a_turn_inside_the_limit_is_not_swept(board):
+    _age_turn(board, FA_TURN_LIMIT_HOURS - 1)
+    assert fa.sweep_expired_turns(_engine) == []
+    assert _auction_of("fa-1")["turn_team"] == "Denver"
+
+
+def test_an_expired_turn_is_forfeited_and_the_board_moves_on(board):
+    _age_turn(board, FA_TURN_LIMIT_HOURS + 1)
+    swept = fa.sweep_expired_turns(_engine)
+    assert [(s["team"], s["was"]) for s in swept] == [("Denver", "bidding")]
+    assert _auction_of("fa-1")["turn_team"] == "Austin"      # the turn passed on
+    assert fa.team_offers(_engine, "Denver") == []           # promise released
+
+
+def test_an_expiry_is_not_recorded_as_a_commissioner_action(board):
+    """The audit log's job is saying who did what. Nobody did this."""
+    _age_turn(board, FA_TURN_LIMIT_HOURS + 1)
+    fa.sweep_expired_turns(_engine)
+    with _engine.connect() as c:
+        row = c.execute(text("select by_commissioner, detail from fa_actions "
+                             "where action = 'bid_forfeit' order by id desc limit 1")).one()
+    assert row[0] is False
+    assert "turn expired" in json.dumps(row[1])
+
+
+def test_a_forced_forfeit_is_still_recorded_as_a_commissioner_action(board):
+    fa.force_forfeit(_engine, board, "Denver", reason="no response")
+    with _engine.connect() as c:
+        assert c.execute(text("select by_commissioner from fa_actions "
+                              "where action = 'bid_forfeit' order by id desc limit 1")
+                         ).scalar() is True
+
+
+def test_an_expired_rfa_match_window_is_declined(league):
+    _open()
+    _free_agent("bos-rfa", rights="Boston", restricted=True)
+    fa.submit_offer(_engine, "Denver", "bos-rfa", 3, 15)
+    fa.close_offer_round(_engine)
+    auction = _auction_of("bos-rfa")
+    assert auction["status"] == "matching"
+
+    _age_turn(auction["id"], FA_TURN_LIMIT_HOURS + 1)
+    swept = fa.sweep_expired_turns(_engine)
+    assert [s["was"] for s in swept] == ["matching"]
+    assert _player("bos-rfa")["team"] == "Denver"     # fell through to the sole bidder
+
+
+def test_a_deadlocked_board_is_never_swept(board):
+    """'awaiting_award' waits on the COMMISSIONER. Expiring the league's own turn
+    would be nonsense, and would silently void a board that needs a decision."""
+    fa.place_bid(_engine, board, "Denver", fa.BID_MATCH)
+    fa.place_bid(_engine, board, "Austin", fa.BID_MATCH)
+    fa.place_bid(_engine, board, "Boston", fa.BID_MATCH)
+    assert _auction_of("fa-1")["status"] == "awaiting_award"
+
+    _age_turn(_auction_of("fa-1")["id"], FA_TURN_LIMIT_HOURS * 10)
+    assert fa.sweep_expired_turns(_engine) == []
+    assert _auction_of("fa-1")["status"] == "awaiting_award"
+
+
+def test_sweeping_twice_is_harmless(board):
+    _age_turn(board, FA_TURN_LIMIT_HOURS + 1)
+    assert len(fa.sweep_expired_turns(_engine)) == 1
+    assert fa.sweep_expired_turns(_engine) == []      # the clock restarted on the pass
+
+
+def test_the_state_document_carries_the_deadline(board):
+    state = fa.free_agency_state(_engine)
+    b = state["auctions"][0]
+    assert state["turn_limit_hours"] == FA_TURN_LIMIT_HOURS
+    assert b["turn_deadline"] is not None
+    # Just set, so the countdown is the full limit give or take the test's runtime.
+    assert 0 < b["turn_seconds_left"] <= FA_TURN_LIMIT_HOURS * 3600
+
+
+# -- the public record of a closed round -------------------------------------
+def test_history_shows_every_offer_on_a_finished_board_including_the_losers(board):
+    fa.place_bid(_engine, board, "Denver", fa.BID_FORFEIT)
+    fa.place_bid(_engine, board, "Austin", fa.BID_FORFEIT)
+
+    hist = fa.period_history(_engine)
+    assert hist["period"]["season"] == _SEASON
+    assert len(hist["boards"]) == 1
+    entry = hist["boards"][0]
+    assert entry["player_id"] == "fa-1"
+    assert entry["winning_team"] == "Boston" and entry["signed_value"] == 20
+    assert entry["round_number"] == 1
+    assert sorted(o["team"] for o in entry["offers"]) == ["Austin", "Boston", "Denver"]
+    assert {o["team"]: o["status"] for o in entry["offers"]} == {
+        "Boston": "won", "Denver": "forfeited", "Austin": "forfeited"}
+
+
+def test_history_withholds_a_board_that_is_still_sealed(league):
+    _open()
+    _free_agent("fa-1")
+    fa.submit_offer(_engine, "Boston", "fa-1", 3, 20)
+    assert fa.period_history(_engine)["boards"] == []
+
+
+def test_history_withholds_a_board_that_is_live(board):
+    """A live board's offers are already public through the state document; history
+    is the record of what FINISHED, so a board still being bid on isn't in it."""
+    assert fa.period_history(_engine)["boards"] == []
+
+
+def test_history_includes_a_board_nobody_won(board):
+    """A retirement kills the board mid-auction. It still happened, and what each
+    team had promised is still part of the record."""
+    offseason.retire_players(_engine, ["fa-1"], _SEASON)
+
+    entry = fa.period_history(_engine)["boards"][0]
+    assert entry["status"] == "void"
+    assert entry["outcome"] == "player_ineligible"
+    assert entry["winning_team"] is None
+    assert len(entry["offers"]) == 3                      # all three still on the record
+
+
+def test_history_spans_every_round_of_the_period(league):
+    _open()
+    _free_agent("fa-1")
+    _free_agent("fa-2")
+    fa.submit_offer(_engine, "Boston", "fa-1", 2, 5)
+    fa.close_offer_round(_engine)                          # round 1: sole offer signs
+    fa.open_next_round(_engine)
+    fa.submit_offer(_engine, "Denver", "fa-2", 2, 5)
+    fa.close_offer_round(_engine)                          # round 2: same
+
+    hist = fa.period_history(_engine)
+    assert [b["round_number"] for b in hist["boards"]] == [1, 2]
+    assert [b["winning_team"] for b in hist["boards"]] == ["Boston", "Denver"]
+
+
+def test_history_of_an_empty_league_is_empty(league):
+    assert fa.period_history(_engine) == {"period": None, "boards": []}

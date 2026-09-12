@@ -7,7 +7,8 @@ Description: The draft and playoff phases of OperationsHandler, ported onto the
         and repeat each round; traded picks are honored via an injected
         pick-ownership map. Each selection builds a domain.Player (reusing the
         existing, tested draft_simulator stat generation, then converting to the
-        domain model with a stable id), tagged with a rookie contract. Returns
+        domain model with a stable id), tagged with the rookie-scale contract its
+        overall pick earns (simulation_vars.ROOKIE_SCALE). Returns
         the picks; rostering a draftee onto a team stays a manager action (as in
         the legacy design), so the service never mutates a Team.
 
@@ -33,7 +34,13 @@ from handball.domain import Player
 from handball.league_views import TeamId
 from handball.orchestration import GameEngine
 from handball.repository import TeamRepository
+from handball.simulation_vars import ROOKIE_SCALE
 
+# The flat deal every draftee used to get. Retired in favour of ROOKIE_SCALE (the
+# rulebook prices a pick by where it fell, which is what makes a traded pick a
+# knowable asset), but kept as names because they are still the shape of a "fixed
+# terms" deal -- signing_service.FREE_AGENT_CONTRACT_* is the other one -- and
+# nothing is gained by making an old import break.
 ROOKIE_CONTRACT_YEARS = 3
 ROOKIE_CONTRACT_SALARY = 1  # millions
 
@@ -56,13 +63,13 @@ class DraftPickResult:
 
 
 class DraftService:
-    def __init__(
-        self,
-        rookie_years: int = ROOKIE_CONTRACT_YEARS,
-        rookie_salary: int = ROOKIE_CONTRACT_SALARY,
-    ) -> None:
-        self.rookie_years = rookie_years
-        self.rookie_salary = rookie_salary
+    def __init__(self, scale=ROOKIE_SCALE) -> None:
+        """`scale` is the rookie-contract table: (first overall, last overall,
+        years, $M/yr) bands, as in simulation_vars.ROOKIE_SCALE. It replaces the flat
+        rookie_years/rookie_salary this service used to hand out, so the offline
+        stack's draft and the live one price a pick the same way -- a #1 pick and a
+        #64 pick cannot be the same contract in one draft and not the other."""
+        self.scale = scale
 
     def run(
         self,
@@ -77,6 +84,7 @@ class DraftService:
         absent entries mean a team picks its own slot. Stops early if prospects
         run out."""
         from handball.draft_simulator import assign_random_position, create_draft_player
+        from handball.draft_rules import rookie_deal
 
         pick_ownership = pick_ownership or {}
         order = list(reversed(ranked_team_ids))  # worst picks first
@@ -102,8 +110,10 @@ class DraftService:
                 # is (a team must be able to sign its picks), so there is no cap check
                 # here -- update_contract validates the CONTRACT and starts the term
                 # clock. A holder pushed over the hard cap becomes a season-start
-                # blocker instead; see handball/season_readiness.py.
-                player.update_contract(self.rookie_years, self.rookie_salary, rookie=True)
+                # blocker instead; see handball/season_readiness.py. What the deal IS
+                # comes off the rookie scale: where you were taken is the contract.
+                years, salary = rookie_deal(overall, self.scale)
+                player.update_contract(years, salary, rookie=True)
 
                 picks.append(DraftPickResult(
                     round_num=round_num, pick_num=pick_num, overall=overall,

@@ -26,16 +26,22 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from handball.extensions import _apply_extensions
 from handball.pg_repository import PLAYER_SCALAR_COLS
 from handball.repository import _player_from_dict
 from handball.simulation_vars import DRAFT_ROUNDS, RETIREMENT_CANDIDATE_AGE
 
 # Award labels (plain text, written straight to awards.award; the frontend reads
 # (season, award) directly -- see PlayerDetail.tsx).
-AWARD_MVP = "League MVP"
+#
+# These two are STAT TITLES: facts about the finished season, computed from the
+# leaderboard and not open to opinion. The MVP and Rookie of the Year used to be
+# computed here as well and are now VOTED (simulation_vars.AWARDS, handball/
+# voting.py) -- "most valuable" was never a number, and reading it off total
+# performance quietly handed it to whoever played the most minutes.
 AWARD_TOP_SCORER = "Top Scorer"
 AWARD_TOP_GOALIE = "Top Goalie"
-AWARD_ROOKIE = "Rookie of the Year"
+STAT_AWARDS = (AWARD_TOP_SCORER, AWARD_TOP_GOALIE)
 
 
 # -- retirement (commissioner-curated; separate from the atomic rollover) ----
@@ -88,18 +94,24 @@ def retire_players(engine: Engine, legacy_ids: list[str], season: int) -> int:
 # -- the rollover (atomic) ---------------------------------------------------
 def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> dict:
     """Roll the league from `season` to `season + 1` in a single transaction:
-    assign awards, seed next season's draft order (from the pre-reset standings in
+    assign the stat titles, seed next season's draft order (from the pre-reset standings in
     `ranked_team_ids`, best->worst), extend the 10-year future-pick placeholder
-    window by one year, age every non-retired player, move expired contracts to
-    free agency, zero team records, and open the new season. Returns a summary of
-    counts."""
+    window by one year, age every non-retired player, turn signed extensions into
+    contracts, move expired contracts to free agency, zero team records, and open the
+    new season. Returns a summary of counts."""
     new_season = season + 1
     with engine.begin() as conn:
         awards = _compute_awards(conn, season)
-        picks = _seed_draft_order(conn, ranked_team_ids, new_season)
+        picks = _seed_draft_order(conn, ranked_team_ids, new_season, season)
         for future_season in range(new_season + 1, new_season + 11):
             _extend_future_picks(conn, future_season)
         aged = _age_all_players(conn)
+        # Extensions land BETWEEN aging and free agency, and that is the whole point:
+        # aging has just ticked the old deal to zero, and free agency is about to
+        # release everyone sitting there. An extended player is put on their new
+        # contract first, so the next statement doesn't see them. See
+        # handball/extensions.py.
+        extended = _apply_extensions(conn)
         freed = _process_free_agency(conn)
         teams_reset = _reset_team_records(conn)
         conn.execute(
@@ -112,6 +124,7 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
         "awards": awards,
         "draft_picks": picks,
         "players_aged": aged,
+        "extensions_applied": extended,
         "new_free_agents": freed,
         "teams_reset": teams_reset,
     }
@@ -119,22 +132,25 @@ def advance_season(engine: Engine, season: int, ranked_team_ids: list[str]) -> d
 
 # -- awards ------------------------------------------------------------------
 def _compute_awards(conn, season: int) -> dict[str, str | None]:
-    """Assign the four season awards from the finished season's stat lines. Idempotent
-    within the season (clears it first). Returns {award_label: legacy_id|None}."""
-    conn.execute(text("delete from awards where season = :s"), {"s": season})
+    """Assign the season's STAT TITLES from the finished season's stat lines.
+    Idempotent within the season (clears its own rows first). Returns
+    {award_label: legacy_id|None}.
+
+    It clears only the awards it owns. `awards` also holds the VOTED awards, which
+    the commissioner tallied before this rollover was allowed to run (see
+    voting.assert_awards_tallied, enforced on /season/advance) -- deleting the whole
+    season would throw away a vote that can never be re-counted, because the very
+    next steps here zero the standings and stats it was cast against."""
+    conn.execute(
+        text("delete from awards where season = :s and award = any(:labels)"),
+        {"s": season, "labels": list(STAT_AWARDS)},
+    )
     winners = {
-        AWARD_MVP: _top_player(
-            conn, season,
-            "group by pgl.player_id order by sum(pgl.performance) desc nulls last"),
         AWARD_TOP_SCORER: _top_player(
             conn, season, "group by pgl.player_id order by sum(pgl.goals) desc"),
         AWARD_TOP_GOALIE: _top_player(
             conn, season,
             "and p.position = 'Goalie' group by pgl.player_id order by sum(pgl.saves) desc"),
-        AWARD_ROOKIE: _top_player(
-            conn, season,
-            "and p.years_in_league = 0 "
-            "group by pgl.player_id order by sum(pgl.performance) desc nulls last"),
     }
     assigned: dict[str, str | None] = {}
     for label, puid in winners.items():
@@ -168,38 +184,21 @@ def _top_player(conn, season: int, tail_sql: str):
 
 
 # -- draft-pick-order seeding ------------------------------------------------
-def _seed_draft_order(conn, ranked_team_ids: list[str], new_season: int) -> int:
-    """Seed/refresh next season's draft pick order. `ranked_team_ids` is best->worst;
-    the draft runs worst->best, so reverse it. Each round repeats that order;
-    pick_number is the overall (1..teams*rounds) order.
+def _seed_draft_order(conn, ranked_team_ids: list[str], new_season: int,
+                      finished_season: int | None = None) -> int:
+    """Seed/refresh next season's draft pick order. Delegates to
+    handball/draft.py: the order is no longer plain reverse standings (round 1 is
+    half lottery and half bracket, and round 2 puts every playoff team behind every
+    non-playoff team), and that shape belongs with the rest of the draft's rules
+    rather than here.
 
-    A placeholder row for `new_season` may already exist (from _extend_future_picks
-    on an earlier rollover, or the 0009 backfill) and may already have been traded
-    (holder_team_id != original_team_id). This upserts on
-    (season, round, original_team_id) -- always setting pick_number, but only
-    defaulting holder_team_id = original_team_id on a true first insert; on conflict,
-    holder_team_id is left untouched so an existing trade survives. Idempotent for
-    the season. Returns picks seeded (inserted-or-updated)."""
-    order = list(reversed(ranked_team_ids))  # worst picks first
-    slug_to_id = {slug: tid for slug, tid in conn.execute(text("select slug, id from teams")).all()}
-    rows, overall = [], 0
-    for rnd in range(1, DRAFT_ROUNDS + 1):
-        for slug in order:
-            tid = slug_to_id.get(slug)
-            if tid is None:
-                continue
-            overall += 1
-            rows.append({"s": new_season, "r": rnd, "tid": str(tid), "n": overall})
-    if rows:
-        conn.execute(
-            text("insert into draft_picks "
-                 "(season, round, original_team_id, holder_team_id, pick_number) "
-                 "values (:s, :r, cast(:tid as uuid), cast(:tid as uuid), :n) "
-                 "on conflict (season, round, original_team_id) "
-                 "do update set pick_number = excluded.pick_number"),
-            rows,
-        )
-    return len(rows)
+    `finished_season` is the season whose postseason decides the playoff half. It is
+    optional so the pre-draft callers -- and any league that never played a
+    postseason -- keep the old reverse-standings behaviour; see
+    draft.seed_draft_order for exactly what changes when a bracket is present."""
+    from handball import draft
+
+    return draft.seed_draft_order(conn, ranked_team_ids, new_season, finished_season)
 
 
 def _extend_future_picks(conn, target_season: int) -> int:

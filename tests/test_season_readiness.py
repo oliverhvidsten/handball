@@ -6,6 +6,7 @@ the API/integration tests.
 """
 import pytest
 
+from handball.league_views import DEFAULT_RULES
 from handball.salary_cap import HARD_CAP
 from handball.season_readiness import (
     Blocker,
@@ -13,6 +14,7 @@ from handball.season_readiness import (
     OpenFreeAgency,
     SeasonNotReady,
     TeamPayroll,
+    TeamRoster,
     assert_ready,
     blockers,
     checks,
@@ -114,6 +116,118 @@ def test_free_agency_and_the_hard_cap_are_reported_together():
         free_agency=OpenFreeAgency(2027, 1, "offers", 0),
     )
     assert {b.check for b in blockers(state)} == {"hard_cap", "free_agency_open"}
+
+
+# -- roster legality ---------------------------------------------------------
+def _full_counts(**overrides: int) -> dict[str, int]:
+    """A roster that fills every position exactly to starters+bench (no reserves)."""
+    counts = {pos: DEFAULT_RULES.starter_caps[pos] + DEFAULT_RULES.bench_caps[pos]
+              for pos in DEFAULT_RULES.positions}
+    counts.update(overrides)
+    return counts
+
+
+def _rosters(*teams: tuple[str, dict[str, int], int]) -> LeagueState:
+    """A league of (name, position counts, unplaced) rosters, all cap-compliant."""
+    return LeagueState(
+        season=2026,
+        rosters=tuple(
+            TeamRoster(team_id=f"uuid-{i}", slug=name.lower(), name=name,
+                       by_position=counts, unplaced=unplaced)
+            for i, (name, counts, unplaced) in enumerate(teams, start=1)
+        ),
+    )
+
+
+def _legality(state: LeagueState) -> list[Blocker]:
+    return [b for b in blockers(state) if b.check == "roster_legality"]
+
+
+def test_a_fully_stocked_roster_is_not_a_blocker():
+    assert _legality(_rosters(("Team1", _full_counts(), 0))) == []
+
+
+def test_a_roster_with_reserves_is_not_a_blocker():
+    # Four spare Forwards land in reserves, which is exactly reserve_max.
+    counts = _full_counts(Forward=_full_counts()["Forward"] + DEFAULT_RULES.reserve_max)
+    assert _legality(_rosters(("Team1", counts, 0))) == []
+
+
+def test_a_team_short_a_position_blocks_the_season():
+    # One goalie: enough to start, not enough to also fill the bench slot.
+    found = _legality(_rosters(("Team1", _full_counts(Goalie=1), 0)))
+    assert len(found) == 1
+    assert found[0].subject == "Team1"
+    assert "1 short at Goalie (has 1, needs 2)" in found[0].message
+    assert found[0].detail["shortfalls"] == [{"position": "Goalie", "have": 1, "needs": 2}]
+
+
+def test_every_short_position_is_named_in_one_blocker_per_team():
+    found = _legality(_rosters(("Team1", _full_counts(Goalie=0, Defense=2), 0)))
+    assert len(found) == 1                                # one problem per team
+    assert "short at Defense" in found[0].message
+    assert "short at Goalie" in found[0].message
+    assert [s["position"] for s in found[0].detail["shortfalls"]] == ["Defense", "Goalie"]
+
+
+def test_an_empty_roster_blocks_the_season():
+    """A team whose players have all retired comes back with no positions at all."""
+    found = _legality(_rosters(("Team1", {}, 0)))
+    assert len(found) == 1
+    assert len(found[0].detail["shortfalls"]) == len(DEFAULT_RULES.positions)
+    assert found[0].detail["roster_size"] == 0
+
+
+def test_too_many_players_for_the_reserve_bench_blocks_the_season():
+    counts = _full_counts(Forward=_full_counts()["Forward"] + DEFAULT_RULES.reserve_max + 2)
+    found = _legality(_rosters(("Team1", counts, 0)))
+    assert len(found) == 1
+    assert f"{DEFAULT_RULES.reserve_max + 2} players for " in found[0].message
+    assert "(2 too many)" in found[0].message
+    assert found[0].detail["reserves"] == DEFAULT_RULES.reserve_max + 2
+
+
+def test_unplaced_players_block_the_season():
+    found = _legality(_rosters(("Team1", _full_counts(), 2)))
+    assert len(found) == 1
+    assert "2 player(s) on its roster but not in its lineup" in found[0].message
+    assert found[0].detail["unplaced"] == 2
+
+
+def test_unplaced_is_not_reported_while_the_roster_is_unarrangeable():
+    """With a position short there is no legal lineup to be in, so the unplaced
+    players are a symptom -- naming both would send the manager after the wrong one."""
+    found = _legality(_rosters(("Team1", _full_counts(Goalie=1), 9)))
+    assert len(found) == 1
+    assert "short at Goalie" in found[0].message
+    assert "not in its lineup" not in found[0].message
+    assert found[0].detail["unplaced"] == 9        # still carried for the UI
+
+
+def test_one_blocker_per_offending_team_in_league_order():
+    found = _legality(_rosters(
+        ("Alpha", _full_counts(Goalie=1), 0),
+        ("Bravo", _full_counts(), 0),              # clean
+        ("Delta", _full_counts(), 3),
+    ))
+    assert [b.subject for b in found] == ["Alpha", "Delta"]
+
+
+def test_roster_legality_is_reported_alongside_the_other_checks():
+    state = LeagueState(
+        season=2027,
+        payrolls=_state(HARD_CAP + 5).payrolls,
+        free_agency=OpenFreeAgency(2027, 1, "offers", 0),
+        rosters=_rosters(("Team1", _full_counts(Goalie=0), 0)).rosters,
+    )
+    assert {b.check for b in blockers(state)} == {
+        "hard_cap", "free_agency_open", "roster_legality"}
+
+
+def test_a_league_with_no_rosters_loaded_is_ready():
+    """LeagueState defaults rosters to () -- the checks must not invent a blocker
+    for a league that simply has no teams yet."""
+    assert _legality(LeagueState(season=2026)) == []
 
 
 # -- the gate ----------------------------------------------------------------

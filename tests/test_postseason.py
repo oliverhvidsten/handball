@@ -53,8 +53,31 @@ def test_draft_players_are_domain_players_with_rookie_contracts():
     assert isinstance(p, Player)
     assert p.position == "Goalie"
     assert p.rookie_contract is True
-    assert p.years_remaining == 3
+    # The deal comes off the rookie scale, not a flat number: the 1st overall pick
+    # is the top band (5 years, $5M/yr).
+    assert (p.contract_term, p.contract_value, p.years_remaining) == (5, 5, 5)
     assert p.id.startswith("b-")       # stable id keyed off holder + name (worst picks first -> B)
+
+
+def test_draft_contracts_follow_the_rookie_scale_down_the_board():
+    np.random.seed(0)
+    random.seed(0)
+    # 11 teams, one round: picks 1-10 sit in the first band, pick 11 in the second.
+    ranked = [chr(ord("A") + i) for i in range(11)]
+    picks = DraftService().run(
+        ranked, [(f"Rookie{i}", "Forward") for i in range(11)], rounds=1)
+    deals = [(p.overall, p.player.contract_term, p.player.contract_value) for p in picks]
+    assert deals[0] == (1, 5, 5)
+    assert deals[9] == (10, 5, 5)
+    assert deals[10] == (11, 5, 4)
+
+
+def test_draft_takes_an_injected_scale():
+    np.random.seed(0)
+    random.seed(0)
+    picks = DraftService(scale=((1, 2, 2, 9),)).run(
+        ["A", "B"], [("One", "Forward"), ("Two", "Forward")], rounds=1)
+    assert [(p.player.contract_term, p.player.contract_value) for p in picks] == [(2, 9), (2, 9)]
 
 
 def test_draft_stops_when_prospects_run_out():

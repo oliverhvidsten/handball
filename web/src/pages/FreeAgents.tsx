@@ -5,7 +5,10 @@ import { ApiError, apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
 import { DataTable, Input, Select, Tag, StatCard, StatChip, Button, Alert, EmptyState, Toast } from "../ds";
 import { AuctionBoard } from "../components/AuctionBoard";
-import { problemsOf, useFreeAgencyState, type FATeam } from "../lib/freeAgency";
+import {
+  problemsOf, useFreeAgencyHistory, useFreeAgencyState,
+  type FAHistoryBoard, type FATeam,
+} from "../lib/freeAgency";
 
 // The free-agent pool is just "not retired, no team" (see handball/offseason.py) --
 // there is no separate pool table. rights_team_id is the team the player's last
@@ -56,6 +59,59 @@ const POS_OPTIONS = [{ value: "all", label: "All positions" }, ...POSITIONS.map(
 
 const money = (m: number) => `$${m}M`;
 
+// How each offer ended, in words. 'superseded' is the one worth spelling out: an
+// offer is never edited, it is replaced, so the chain is the negotiation.
+const OFFER_FATE: Record<string, { label: string; tone: string }> = {
+  won: { label: "signed", tone: "green" },
+  lost: { label: "outbid", tone: "neutral" },
+  forfeited: { label: "walked away", tone: "neutral" },
+  superseded: { label: "raised", tone: "blue" },
+  withdrawn: { label: "withdrawn", tone: "neutral" },
+  void: { label: "void", tone: "neutral" },
+  open: { label: "standing", tone: "amber" },
+};
+
+/** One finished board: what it settled at, and every offer that was on it. */
+function ClosedBoard({ board }: { board: FAHistoryBoard }) {
+  const won = board.status === "resolved";
+  return (
+    <div style={{ background: "var(--surface-card)", border: "1px solid var(--line)",
+                  borderRadius: "var(--radius-md)", padding: "10px 14px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <strong>{board.player_name}</strong>
+        <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>{board.position}</span>
+        {board.restricted && <Tag tone="purple" size="sm">Restricted</Tag>}
+        <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>round {board.round_number}</span>
+        <span style={{ marginLeft: "auto", fontSize: "var(--text-sm)" }}>
+          {won ? (
+            <>→ <strong>{board.winning_team_name}</strong>{" "}
+              {board.signed_term}yr / {money(board.signed_value ?? 0)}</>
+          ) : (
+            <span style={{ color: "var(--muted)" }}>
+              unsigned ({(board.outcome ?? "void").replace(/_/g, " ")})
+            </span>
+          )}
+        </span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 6,
+                    fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)" }}>
+        {board.offers.map((o) => {
+          const fate = OFFER_FATE[o.status] ?? { label: o.status, tone: "gray" };
+          return (
+            <div key={o.id} style={{ display: "flex", gap: 8, alignItems: "baseline",
+                                     opacity: o.status === "won" ? 1 : 0.7 }}>
+              <span style={{ minWidth: 120 }}>{o.team_name}</span>
+              <span style={{ minWidth: 90 }}>{o.term}yr / {money(o.value)}</span>
+              <Tag tone={fate.tone} size="sm">{fate.label}</Tag>
+              {o.is_rfa_match && <Tag tone="purple" size="sm">match</Tag>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function FreeAgents() {
   const { activeTeam } = useAuth();
   const nav = useNavigate();
@@ -92,6 +148,9 @@ export default function FreeAgents() {
   const myBoards = (fa?.teams ?? []).flatMap((t) =>
     t.action_required.map((a) => ({ ...a, team: t })));
   const boardById = (id: number) => (fa?.auctions ?? []).find((x) => x.id === id);
+  // Refetch the record when the live board count changes -- i.e. exactly when a board
+  // finishes and joins it.
+  const history = useFreeAgencyHistory((fa?.auctions ?? []).length);
 
   const load = useCallback(async () => {
     setErr(null);
@@ -322,6 +381,25 @@ export default function FreeAgents() {
                 <span style={{ color: "var(--muted)" }}>({s.outcome.replace(/_/g, " ")}, round {s.round_number})</span>
               </div>
             ))}
+          </div>
+        </>
+      )}
+
+      {/* Who bid what, once a board is finished. The signings list above says who won;
+          this says what everyone else was willing to pay, which is the part managers
+          actually argue about. Sealed rounds never appear here -- a board only enters
+          the record once it has resolved or been voided. */}
+      {(history?.boards ?? []).length > 0 && (
+        <>
+          <h3 style={{ margin: "18px 0 8px" }}>
+            Closed rounds — who bid what
+            <span style={{ color: "var(--muted)", fontWeight: "var(--weight-regular)",
+                           fontSize: "var(--text-sm)" }}>
+              {" "}· {history!.period?.season} offseason
+            </span>
+          </h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+            {(history?.boards ?? []).map((b) => <ClosedBoard key={b.id} board={b} />)}
           </div>
         </>
       )}

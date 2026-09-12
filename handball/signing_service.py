@@ -268,10 +268,23 @@ def team_cap_report(engine: Engine, team_slug: str, rules: RosterRules = DEFAULT
     two offer ceilings (own free agent vs outside). Serves the signing UI and the team
     page -- one place the numbers are shaped, so the website never re-implements a cap
     rule. League constants ride along so the UI can label the thresholds without
-    hardcoding them."""
+    hardcoding them.
+
+    `projected_next_payroll` is the same view one season forward: what the team is
+    already committed to in season+1 (contracts that run past this one, plus every
+    extension signed in this window). It is the number an extension is checked
+    against, so the page that shows a cap must show it too, or a manager will be
+    surprised by a refusal. `extension_window_open` says whether they can act on it
+    today."""
+    from handball.extensions import (            # lazy: extensions imports us
+        projected_next_payroll, roster_snapshot, window_state,
+    )
+
     with engine.connect() as conn:
         team = team_row(conn, team_slug)
         payroll, roster_size = payroll_and_roster(conn, team["id"])
+        projected = projected_next_payroll(roster_snapshot(conn, team["id"]))
+        window_open = window_state(conn).extension_window_open
     situation = cap_situation(payroll)
     return {
         "team": team_slug,
@@ -283,6 +296,8 @@ def team_cap_report(engine: Engine, team_slug: str, rules: RosterRules = DEFAULT
         "over_second_threshold": situation.over_second_threshold,
         "mid_level_exception": situation.mid_level_exception,
         "hard_cap_room": situation.hard_cap_room,
+        "projected_next_payroll": projected,
+        "extension_window_open": window_open,
         "roster_size": roster_size,
         "max_roster": rules.max_roster,
         "roster_spots": max(0, rules.max_roster - roster_size),

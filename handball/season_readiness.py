@@ -1,10 +1,12 @@
 """
 Name: season_readiness.py
 Description: The league's preconditions for STARTING a season -- the "no games can be
-    played until this is fixed" list. Today it holds one item (no team may open the
-    season above the hard cap), but it is built as a registry so the list can grow
-    without the API, the UI, or the run controls changing at all: write a new check
-    function, decorate it, and it shows up everywhere readiness is reported.
+    played until this is fixed" list. Today: no team above the hard cap, the draft
+    finished, free agency settled, and every team able to field a legal lineup. It is
+    built as a registry so the list can grow without the API, the UI, or the run
+    controls changing at all:
+    write a new check function, decorate it, and it shows up everywhere readiness is
+    reported.
 
     Shape:
       - LeagueState is a snapshot of the facts checks reason over, read from the DB
@@ -34,6 +36,7 @@ from typing import Callable
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from handball.league_views import DEFAULT_RULES, RosterRules
 from handball.salary_cap import HARD_CAP, hard_cap_overage
 
 
@@ -59,12 +62,62 @@ class OpenFreeAgency:
 
 
 @dataclass(frozen=True)
+class UnfinishedDraft:
+    """A draft for this season that has not finished (handball/draft.py). Present
+    only while one is outstanding; None means either the draft is complete or this
+    league has no draft for the season at all -- leagues that predate the draft, and
+    every offline fixture, must not be blocked by a phase they never had."""
+    season: int
+    status: str
+
+
+@dataclass(frozen=True)
+class TeamRoster:
+    """One team's roster SHAPE -- the counts the arrangement rules actually read.
+
+    `by_position` counts non-retired players per position; `unplaced` is how many of
+    them sit on the roster with no slot (slot_group is null). That is enough to decide
+    everything canonical_team() decides, without loading a single Player: it fills
+    each position's starters then bench from the players at that position, so a
+    position is fillable iff it has starter_cap + bench_cap bodies, and everyone left
+    over lands in reserves."""
+    team_id: str
+    slug: str
+    name: str
+    by_position: dict[str, int] = field(default_factory=dict)
+    unplaced: int = 0
+
+    def shortfalls(self, rules: RosterRules) -> list[tuple[str, int, int]]:
+        """(position, have, need) for every position that cannot be filled, in the
+        rules' position order."""
+        out = []
+        for pos in rules.positions:
+            have = self.by_position.get(pos, 0)
+            need = rules.starter_caps[pos] + rules.bench_caps[pos]
+            if have < need:
+                out.append((pos, have, need))
+        return out
+
+    def reserves(self, rules: RosterRules) -> int:
+        """How many players would land in reserves -- the surplus at each position
+        summed. A position that is short contributes nothing, so this matches what
+        canonical_team() would produce."""
+        return sum(
+            max(0, self.by_position.get(pos, 0)
+                   - rules.starter_caps[pos] - rules.bench_caps[pos])
+            for pos in rules.positions
+        )
+
+
+@dataclass(frozen=True)
 class LeagueState:
     """Everything the readiness checks look at, read in one pass. Grow this as
     checks are added; keep it plain data so the checks stay pure."""
     season: int
     payrolls: tuple[TeamPayroll, ...] = ()
     free_agency: OpenFreeAgency | None = None
+    rosters: tuple[TeamRoster, ...] = ()
+    draft: UnfinishedDraft | None = None
 
 
 # -- findings ----------------------------------------------------------------
@@ -176,6 +229,39 @@ def _hard_cap_compliance(state: LeagueState) -> list[Blocker]:
 
 
 @readiness_check(
+    "draft_complete",
+    "The draft is finished -- every pick has been made.",
+)
+def _draft_finished(state: LeagueState) -> list[Blocker]:
+    """A season cannot start with picks still on the board. Draftees are rostered
+    players on rookie contracts, so an unfinished draft means teams opening the year
+    short of the bodies they are owed -- and free agency is gated on the draft too
+    (a manager who has not picked yet cannot know what holes they are signing to
+    fill). The fix is the commissioner's: draw the lottery, open the room, and let
+    the clock finish what the managers do not.
+
+    Declared ahead of the free-agency check because that is the order the offseason
+    runs in, and the registry reports blockers in registration order -- the
+    commissioner should be told to finish the draft before being told to close a
+    market that cannot open yet."""
+    draft = state.draft
+    if draft is None:
+        return []
+    where = {
+        "pending": "the lottery has not been drawn",
+        "lottery_drawn": "the room has not opened",
+        "open": "it is still on the clock",
+    }.get(draft.status, f"it is {draft.status!r}")
+    return [Blocker(
+        check="draft_complete",
+        subject="The draft",
+        message=(f"The {draft.season} draft is not finished ({where}); finish it "
+                 f"before the season can start."),
+        detail={"season": draft.season, "status": draft.status},
+    )]
+
+
+@readiness_check(
     "free_agency_open",
     "Free agency is settled -- no offer round or auction is still running.",
 )
@@ -204,6 +290,68 @@ def _free_agency_settled(state: LeagueState) -> list[Blocker]:
     )]
 
 
+@readiness_check(
+    "roster_legality",
+    "Every team can field a legal lineup, with no player left out of it.",
+)
+def _rosters_can_field_a_lineup(state: LeagueState) -> list[Blocker]:
+    """A team that cannot be arranged into a legal lineup cannot play its games.
+
+    Two ways to get here, and they are reported as one problem per team because the
+    fix is the same conversation with that manager:
+      - SHORT A POSITION (or too many bodies for reserves). Retirements and expiries
+        both take players off a roster without asking whether what remains is legal,
+        so this is the normal end-of-offseason state, not an exotic one. The fix is
+        the manager's: sign a free agent, or trade.
+      - EVERYTHING IS THERE BUT NOT PLACED. A signing rebuilds the lineup best-effort
+        (roster_layout.try_rebuild_layout), so a player signed into an incomplete
+        roster stays unplaced, and stays that way after the roster is completed by
+        some later write that doesn't rebuild. They are on the team and would not
+        play. Re-saving the lineup places them.
+
+    Reported only when the roster is otherwise arrangeable: while a position is
+    short, unplaced players are a SYMPTOM (there is no legal lineup to be in), and
+    listing both would send the manager after the wrong thing first.
+    """
+    rules = DEFAULT_RULES
+    out: list[Blocker] = []
+    for team in state.rosters:
+        short = team.shortfalls(rules)
+        reserves, over_reserves = team.reserves(rules), 0
+        if reserves > rules.reserve_max:
+            over_reserves = reserves - rules.reserve_max
+
+        reasons: list[str] = []
+        for pos, have, need in short:
+            reasons.append(f"{need - have} short at {pos} (has {have}, needs {need})")
+        if over_reserves:
+            reasons.append(f"{reserves} players for {rules.reserve_max} reserve spots "
+                           f"({over_reserves} too many)")
+        if reasons:
+            message = (f"{team.name} cannot field a legal lineup: {'; '.join(reasons)}. "
+                       f"Sign, trade or release players before the season can start.")
+        elif team.unplaced:
+            message = (f"{team.name} has {team.unplaced} player(s) on its roster but not "
+                       f"in its lineup; they would not play. Save the team's lineup to "
+                       f"place them before the season can start.")
+        else:
+            continue
+
+        out.append(Blocker(
+            check="roster_legality",
+            subject=team.name,
+            message=message,
+            detail={
+                "team_id": team.team_id, "slug": team.slug,
+                "shortfalls": [{"position": p, "have": h, "needs": n} for p, h, n in short],
+                "reserves": reserves, "reserve_max": rules.reserve_max,
+                "unplaced": team.unplaced,
+                "roster_size": sum(team.by_position.values()),
+            },
+        ))
+    return out
+
+
 # -- the database side -------------------------------------------------------
 def load_league_state(engine: Engine, season: int) -> LeagueState:
     """Read the snapshot the checks run against. One query per fact group; add here
@@ -229,6 +377,41 @@ def load_league_state(engine: Engine, season: int) -> LeagueState:
                  "from fa_periods f left join fa_rounds r on r.period_id = f.id "
                  "where f.status = 'open' order by r.round_number desc nulls last limit 1")
         ).mappings().first()
+        # The draft for this season, when one exists and has not finished. Read
+        # here rather than through draft.py so this module keeps its one dependency
+        # (salary_cap); the status vocabulary is alembic 0014's CHECK constraint.
+        draft_row = conn.execute(
+            text("select season, status from draft_state "
+                 "where season = :s and status <> 'complete'"),
+            {"s": season},
+        ).mappings().first()
+        # Roster shape, one row per (team, position). The retired filter is in the
+        # JOIN, not a WHERE, so a team whose players have all retired still comes
+        # back -- as an empty roster, which is exactly the blocker we want to report.
+        # A team with no players at all yields a single row with position NULL.
+        roster_rows = conn.execute(
+            text("select t.id::text as team_id, t.slug, t.name, "
+                 "p.position::text as position, count(p.id) as n, "
+                 "count(p.id) filter (where p.slot_group is null) as unplaced "
+                 "from teams t "
+                 "left join players p on p.team_id = t.id and p.retired = false "
+                 "group by t.id, t.slug, t.name, p.position "
+                 "order by t.name, p.position")
+        ).mappings().all()
+    # Fold the per-position rows up into one TeamRoster each, preserving the query's
+    # name order (dicts iterate in insertion order).
+    counts: dict[str, dict[str, int]] = {}
+    unplaced: dict[str, int] = {}
+    ident: dict[str, tuple[str, str]] = {}
+    for r in roster_rows:
+        tid = r["team_id"]
+        ident.setdefault(tid, (r["slug"], r["name"]))
+        counts.setdefault(tid, {})
+        unplaced.setdefault(tid, 0)
+        if r["position"] is None:
+            continue                    # the no-players-at-all row; team still counts
+        counts[tid][r["position"]] = int(r["n"])
+        unplaced[tid] += int(r["unplaced"])
     return LeagueState(
         season=season,
         payrolls=tuple(
@@ -242,6 +425,14 @@ def load_league_state(engine: Engine, season: int) -> LeagueState:
             round_status=fa["round_status"] or "none",
             live_auctions=int(fa["live_auctions"] or 0),
         ) if fa else None,
+        draft=UnfinishedDraft(
+            season=int(draft_row["season"]), status=draft_row["status"],
+        ) if draft_row else None,
+        rosters=tuple(
+            TeamRoster(team_id=tid, slug=ident[tid][0], name=ident[tid][1],
+                       by_position=counts[tid], unplaced=unplaced[tid])
+            for tid in ident
+        ),
     )
 
 

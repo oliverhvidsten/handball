@@ -154,3 +154,65 @@ HARD_CAP = 250                       # payroll may NEVER exceed this, under any 
 FIRST_MLE = 10                       # mid-level exception for teams below the first threshold
 SECOND_MLE = 5                       # mid-level exception for teams below the second threshold
 
+# Offseason free agency (handball/free_agency.py). How long a team may sit on a turn
+# it owns -- an RFA match window or its turn in sequential bidding -- before the
+# league acts for it. Sequential bidding is strictly ordered, so one manager who
+# stops answering halts the board and, through it, the whole round; the clock is what
+# makes the market finish without the commissioner having to chase anybody. It is
+# generous on purpose: managers are people with jobs, and forfeiting a player because
+# somebody slept is worse than a slow auction.
+FA_TURN_LIMIT_HOURS = 48
+
+
+# --- the draft room ------------------------------------------------------
+# The draft is live and turn-based (handball/draft.py) and runs on the same lazy
+# clock as free agency: there is no scheduler in this deployment, so the state read
+# sweeps an expired turn before it answers. Shorter than FA_TURN_LIMIT_HOURS because
+# a draft is one sitting with everyone watching, not a market that runs for days.
+DRAFT_TURN_LIMIT_HOURS = 24
+
+# Lottery odds for the 16 non-playoff teams, WORST TEAM FIRST, in percent. The draw is
+# sequential: weight i belongs to the i-th worst team still in the pool, the winner is
+# removed, and the remaining weights are renormalised for the next slot -- so these are
+# the odds on the FIRST pick only, and every later slot is conditional on what came
+# before. They sum to 100 for readability; nothing requires it.
+LOTTERY_WEIGHTS = (25, 20, 15, 10, 5, 5, 5, 5, 2, 2, 1, 1, 1, 1, 1, 1)
+
+# The rookie scale: (first overall pick, last overall pick, years, $M/yr). A drafted
+# player's contract is not negotiated -- where you were taken IS the deal, which is what
+# makes a traded pick a knowable asset. Rookie contracts are exempt from the cap at
+# signing (see salary_cap), so a team can always sign its picks.
+ROOKIE_SCALE = (
+    (1, 10, 5, 5),
+    (11, 20, 5, 4),
+    (21, 32, 5, 3),
+    (33, 48, 2, 2),
+    (49, 64, 2, 1),
+)
+
+
+# --- award voting --------------------------------------------------------
+# The managers vote (handball/voting.py). Top Scorer and Top Goalie stay auto-computed
+# stat titles and are deliberately NOT in this list -- they are facts, not opinions.
+AWARDS = ("Most Valuable Player", "Rookie of the Year", "Defensive Player of the Year",
+          "Eleventh Man of the Year", "Most Improved Player", "Coach of the Year")
+AWARD_BALLOT_SIZE = 5                # ranked places on one ballot
+AWARD_POINTS = (10, 7, 5, 3, 1)      # points for 1st..5th place; ties break on 1st-place votes
+AWARD_VOTING_OPENS_AFTER_PERIOD = 5  # i.e. once the regular season is complete
+
+# The All-Star ballot is POSITIONAL, one per conference: this many names per position.
+# The top 3/3/3/1 by votes start the exhibition, the rest come off the bench.
+ALL_STAR_BALLOT = {"Forward": 5, "Midfielder": 5, "Defense": 5, "Goalie": 2}
+ALL_STAR_AFTER_PERIOD = 3            # the break falls between periods 3 and 4
+
+
+# --- extensions & the deadline -------------------------------------------
+# An extension is agreed in one window per season and starts at the NEXT rollover
+# (handball/extensions.py). Only players in the last year of a deal are eligible, so
+# an extension is always a decision about a player about to leave.
+EXTENSION_WINDOW_AFTER_PERIOD = 1
+EXTENSION_ELIGIBLE_YEARS_REMAINING = 1
+
+# No trade may be proposed or accepted once this many periods have run; a trade already
+# accepted may still be approved, since period 5 already requires a clear queue.
+TRADE_DEADLINE_AFTER_PERIOD = 4
