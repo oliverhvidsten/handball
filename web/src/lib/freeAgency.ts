@@ -39,6 +39,11 @@ export interface FAAuction {
   rights_team_id: string | null;
   rights_team: string | null;          // slug of the Bird-rights holder
   waiting_since: string | null;
+  // The turn clock (simulation_vars.FA_TURN_LIMIT_HOURS). Computed server-side, so
+  // the countdown doesn't drift with the viewer's clock. Null on a board that isn't
+  // waiting on a team -- 'awaiting_award' waits on the commissioner and never expires.
+  turn_deadline: string | null;
+  turn_seconds_left: number | null;
   player_id: string;
   player_name: string;
   position: string;
@@ -87,6 +92,74 @@ export interface FAState {
   teams: FATeam[];
   your_turn_count: number;
   is_commissioner: boolean;
+  turn_limit_hours?: number;
+  // Turns the read itself expired (the poll is the clock -- see GET /free-agency/state).
+  swept?: { auction_id: number; player: string; team: string; team_name: string; was: string }[];
+}
+
+// GET /free-agency/history -- the public record of every board that has FINISHED,
+// losing offers included. Sealed rounds are not in it: a board only appears once it
+// has resolved or been voided.
+export interface FAHistoryOffer {
+  id: number;
+  team: string;
+  team_name: string;
+  term: number;
+  value: number;
+  status: "open" | "withdrawn" | "superseded" | "forfeited" | "lost" | "won" | "void";
+  origin: string;
+  is_rfa_match: boolean;
+}
+export interface FAHistoryBoard {
+  id: number;
+  round_number: number;
+  status: "resolved" | "void";
+  outcome: string | null;
+  restricted: boolean;
+  signed_term: number | null;
+  signed_value: number | null;
+  player_id: string;
+  player_name: string;
+  position: string;
+  winning_team: string | null;
+  winning_team_name: string | null;
+  rights_team_name: string | null;
+  offers: FAHistoryOffer[];
+}
+export interface FAHistory {
+  period: { id: string; season: number; status: string } | null;
+  boards: FAHistoryBoard[];
+}
+
+/** Whole hours/minutes left on a turn, or null when the board has no clock. */
+export function formatTimeLeft(seconds: number | null): string | null {
+  if (seconds == null) return null;
+  if (seconds <= 0) return "overdue";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m left` : `${m}m left`;
+}
+
+/**
+ * The public record of finished boards. Fetched once per mount and again whenever
+ * `signal` changes -- pass the live board count, so the record refreshes exactly when
+ * a board leaves the live list rather than on a timer of its own.
+ */
+export function useFreeAgencyHistory(signal: unknown) {
+  const [history, setHistory] = useState<FAHistory | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await apiFetch<FAHistory>("/free-agency/history", { method: "GET" });
+        if (!cancelled) setHistory(next);
+      } catch {
+        if (!cancelled) setHistory(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [signal]);
+  return history;
 }
 
 export function problemsOf(e: unknown): string[] {

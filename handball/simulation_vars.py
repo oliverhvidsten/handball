@@ -154,3 +154,12 @@ HARD_CAP = 250                       # payroll may NEVER exceed this, under any 
 FIRST_MLE = 10                       # mid-level exception for teams below the first threshold
 SECOND_MLE = 5                       # mid-level exception for teams below the second threshold
 
+# Offseason free agency (handball/free_agency.py). How long a team may sit on a turn
+# it owns -- an RFA match window or its turn in sequential bidding -- before the
+# league acts for it. Sequential bidding is strictly ordered, so one manager who
+# stops answering halts the board and, through it, the whole round; the clock is what
+# makes the market finish without the commissioner having to chase anybody. It is
+# generous on purpose: managers are people with jobs, and forfeiting a player because
+# somebody slept is worse than a slow auction.
+FA_TURN_LIMIT_HOURS = 48
+

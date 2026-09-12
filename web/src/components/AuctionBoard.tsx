@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button, Input, Select, Tag, Alert } from "../ds";
-import { beatsLeader, leadingOffer, type FAAuction, type FATeam } from "../lib/freeAgency";
+import { beatsLeader, formatTimeLeft, leadingOffer, type FAAuction, type FATeam } from "../lib/freeAgency";
 
 const money = (m: number) => `$${m}M`;
 const deal = (term: number, value: number) => `${term}yr / ${money(value)}`;
@@ -9,6 +9,9 @@ function hoursSince(iso: string | null): number | null {
   if (!iso) return null;
   return Math.floor((Date.now() - new Date(iso).getTime()) / 3_600_000);
 }
+
+// Under this, the turn is close enough to expiring to say so in a warning colour.
+const CLOCK_WARNING_SECONDS = 6 * 3600;
 
 /**
  * One player's board. Read-only for everyone watching; the action row appears only
@@ -38,6 +41,11 @@ export function AuctionBoard({
   const [awardTo, setAwardTo] = useState("");
 
   const waiting = hoursSince(auction.waiting_since);
+  // The turn clock. A board past its limit is forfeited by the next read of the
+  // state document, so "overdue" here means "about to be", not "stuck".
+  const timeLeft = formatTimeLeft(auction.turn_seconds_left);
+  const clockUrgent =
+    auction.turn_seconds_left != null && auction.turn_seconds_left < CLOCK_WARNING_SECONDS;
   const stillIn = auction.seats.filter((s) => s.state === "active");
   const myTurn =
     !!acting &&
@@ -65,13 +73,17 @@ export function AuctionBoard({
         {auction.status === "awaiting_award" && <Tag tone="amber" size="sm">Deadlocked</Tag>}
         {auction.status === "matching" && <Tag tone="blue" size="sm">Match window</Tag>}
         {myTurn && <Tag tone="amber" size="sm">Your turn</Tag>}
+        {timeLeft && (
+          <Tag tone={clockUrgent ? "red" : "neutral"} size="sm">{timeLeft}</Tag>
+        )}
       </div>
 
       <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", margin: "6px 0 10px" }}>
         {auction.status === "matching" ? (
           <>
             Offer sheet: <strong>{lead ? deal(lead.term, lead.value) : "—"}</strong> from{" "}
-            {lead?.team_name}. The rights holder may match it exactly.
+            {lead?.team_name}. The rights holder may match it exactly
+            {timeLeft ? <> — {timeLeft}, then it lapses</> : null}.
           </>
         ) : auction.status === "awaiting_award" ? (
           <>
@@ -84,7 +96,7 @@ export function AuctionBoard({
             {stillIn.length} team{stillIn.length === 1 ? "" : "s"} still in
             {auction.turn_team_name && (
               <> · on the clock: {auction.turn_team_name}
-                {waiting != null && ` · ${waiting}h`}</>
+                {timeLeft ? ` · ${timeLeft}` : waiting != null ? ` · ${waiting}h` : ""}</>
             )}
           </>
         )}

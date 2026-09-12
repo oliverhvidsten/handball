@@ -36,6 +36,23 @@ interface SeasonState {
 }
 interface Blocker { check: string; subject: string; message: string; }
 interface Candidate { legacy_id: string; name: string; age: number; position: string; team_name: string | null; }
+// Bulk contract administration (handball/contract_admin.py). `expiring_next_rollover`
+// is the number that matters: how many rostered players the next rollover releases.
+interface ContractAudit {
+  rostered: number;
+  expiring_next_rollover: number;
+  restart_runnable: boolean;
+  restart_would_change?: number;
+  restart_expiring_next_rollover?: number;
+  restart_problems?: string[];
+}
+interface BulkPlan {
+  changed: number;
+  unchanged: number;
+  expiring_before: number;
+  expiring_next_rollover: number;
+  payrolls: { team: string; before: number; after: number }[];
+}
 
 export default function Commissioner() {
   const { fa, refresh: refreshFa } = useFreeAgencyState();
@@ -43,6 +60,8 @@ export default function Commissioner() {
   const [queue, setQueue] = useState<TradeT[]>([]);
   const [season, setSeason] = useState<SeasonState | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [contracts, setContracts] = useState<ContractAudit | null>(null);
+  const [contractPlan, setContractPlan] = useState<BulkPlan | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -74,6 +93,9 @@ export default function Commissioner() {
     } else {
       setCandidates([]);
     }
+    try {
+      setContracts(await apiFetch<ContractAudit>("/contracts/audit", { method: "GET" }));
+    } catch { setContracts(null); }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -113,6 +135,31 @@ export default function Commissioner() {
       setToast(`Retired ${selected.size}.`);
       setSelected(new Set());
       await load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // The repair is two clicks on purpose: it rewrites every expired contract in the
+  // league, so the plan is shown (dry run) before anything is written.
+  async function runContractRepair(dryRun: boolean) {
+    const path = dryRun ? "/contracts/bulk:preview" : "/contracts/bulk";
+    setErr(null);
+    setBusy(path);
+    try {
+      const plan = await apiFetch<BulkPlan>("/contracts/bulk", {
+        method: "POST",
+        body: JSON.stringify({ dry_run: dryRun }),
+      });
+      if (dryRun) {
+        setContractPlan(plan);
+      } else {
+        setContractPlan(null);
+        setToast(`Restarted ${plan.changed} contract(s).`);
+        await load();
+      }
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : "action failed");
     } finally {
@@ -379,6 +426,68 @@ export default function Commissioner() {
               {busy === "/season/advance" ? "Advancing…" : `Advance to season ${season!.season + 1}`}
             </Button>
           </div>
+        </>
+      )}
+
+      {/* -- contracts -----------------------------------------------------
+          Rosters imported before contracts were modelled carry a years_remaining
+          nobody ever set, and the rollover releases everyone at or below zero. This
+          is the bulk repair (handball/contract_admin.py). Shown only when there is
+          something to say: a healthy league renders nothing here. */}
+      {contracts != null && contracts.expiring_next_rollover > 0 && (
+        <>
+          <h3 style={{ margin: "28px 0 10px" }}>Contracts</h3>
+          <Alert
+            tone={contracts.expiring_next_rollover === contracts.rostered ? "error" : "warning"}
+            title={`${contracts.expiring_next_rollover} of ${contracts.rostered} rostered players expire at the next rollover`}
+            style={{ marginBottom: 12 }}
+          >
+            {contracts.expiring_next_rollover === contracts.rostered
+              ? "That is every player in the league. Contracts imported before the contract model carry a countdown that was never set, and advancing the season would empty all 32 rosters."
+              : "Their contracts run out when the season advances, and they become free agents."}
+          </Alert>
+
+          {contracts.restart_runnable === false && (
+            <Alert
+              tone="error"
+              title="The bulk restart can't run as-is"
+              items={contracts.restart_problems ?? []}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+
+          {contractPlan && (
+            <Alert tone="info" title="Preview — nothing has been written" style={{ marginBottom: 12 }}>
+              Restarts {contractPlan.changed} contract(s) at the term already on the books,
+              leaving {contractPlan.unchanged} untouched. Players expiring at the next
+              rollover: {contractPlan.expiring_before} → {contractPlan.expiring_next_rollover}.
+              {contractPlan.payrolls.length === 0
+                ? " No team's payroll changes."
+                : ` ${contractPlan.payrolls.length} team payroll(s) change.`}
+            </Alert>
+          )}
+
+          {contracts.restart_runnable !== false && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button
+                disabled={busy != null}
+                onClick={() => void runContractRepair(true)}
+              >
+                {busy === "/contracts/bulk:preview" ? "Checking…" : "Preview repair"}
+              </Button>
+              {contractPlan && (
+                <Button
+                  variant="primary"
+                  disabled={busy != null}
+                  onClick={() => void runContractRepair(false)}
+                >
+                  {busy === "/contracts/bulk"
+                    ? "Applying…"
+                    : `Restart ${contractPlan.changed} contract(s)`}
+                </Button>
+              )}
+            </div>
+          )}
         </>
       )}
 

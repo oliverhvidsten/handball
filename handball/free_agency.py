@@ -74,8 +74,17 @@ from handball.free_agency_rules import (  # noqa: F401 (FreeAgencyError re-expor
 )
 from handball.league_views import DEFAULT_RULES, RosterRules
 from handball.signing_service import SigningError
+from handball.simulation_vars import FA_TURN_LIMIT_HOURS
 
 LIVE_AUCTION_STATUSES = ("collecting", "matching", "bidding", "awaiting_award")
+
+# The live statuses a board may be SHOWN in. 'collecting' is deliberately absent: a
+# board is created by the first offer on a player, so while a round is taking offers
+# the board and everything on it IS the sealed information -- its very existence says
+# somebody bid on that player. Boards become public the moment the round closes, which
+# is when 'collecting' turns into one of these. Managers see their own offers all
+# along, layered on per caller by the API from team_offers().
+PUBLIC_AUCTION_STATUSES = ("matching", "bidding", "awaiting_award")
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +369,20 @@ def decline_match(
     *,
     actor: str | None = None,
     forced: bool = False,
+    by_commissioner: bool | None = None,
+    reason: str | None = None,
     rules: RosterRules = DEFAULT_RULES,
 ) -> dict:
     """The rights team passes. The board is re-planned as an ordinary free agency with
     the offers already on the table -- the rights team's own lower offer included,
     which is what the rule says literally. `forced` is the commissioner declining for a
-    rights holder who has stalled the board."""
+    rights holder who has stalled the board.
+
+    `by_commissioner` is what the audit log records, and defaults to `forced` because
+    that is what a forced decline normally is. The turn clock passes it False: an
+    expiry is the league's own rule firing, not a person intervening, and a log that
+    blamed the commissioner for it would be lying about the most important thing it
+    records."""
     with engine.begin() as conn:
         period, rnd = _lock_round(conn)
         auction = _lock_auction(conn, auction_id)
@@ -381,8 +398,10 @@ def decline_match(
         plan = plan_after_decline(_auction_input(auction, offers, frozenset()))
         _apply_plan(conn, period, rnd, auction, plan, rules=rules, actor=actor)
         _log(conn, period["id"], "rfa_declined", round_id=rnd["id"], auction_id=auction_id,
-             team_id=str(auction["rights_team_id"]), actor=actor, by_commissioner=forced,
-             detail={"player": auction["name"], "became": plan.status})
+             team_id=str(auction["rights_team_id"]), actor=actor,
+             by_commissioner=forced if by_commissioner is None else by_commissioner,
+             detail={"player": auction["name"], "became": plan.status,
+                     "reason": reason})
         _maybe_complete_round(conn, rnd["id"])
     return {"auction_id": auction_id, "status": plan.status, "outcome": plan.outcome}
 
@@ -400,12 +419,16 @@ def place_bid(
     value: int | None = None,
     actor: str | None = None,
     forced: bool = False,
+    by_commissioner: bool | None = None,
     reason: str | None = None,
     rules: RosterRules = DEFAULT_RULES,
 ) -> dict:
     """One turn: 'match', 'raise' or 'forfeit'. The auction row is locked first (it is
     the turn token), so two managers hitting the button at once serialize and the loser
-    is told it is not their turn."""
+    is told it is not their turn.
+
+    `by_commissioner` is what the audit log records, defaulting to `forced`. The turn
+    clock passes it False -- see decline_match."""
     with engine.begin() as conn:
         period, rnd = _lock_round(conn)
         auction = _lock_auction(conn, auction_id)
@@ -458,7 +481,8 @@ def place_bid(
 
         _finish_bid(conn, period, rnd, auction, plan, new_offer_id, rules=rules, actor=actor)
         _log(conn, period["id"], f"bid_{action}", round_id=rnd["id"], auction_id=auction_id,
-             team_id=team["id"], actor=actor, by_commissioner=forced,
+             team_id=team["id"], actor=actor,
+             by_commissioner=forced if by_commissioner is None else by_commissioner,
              detail={"player": prow["name"], "term": plan.new_offer.term if plan.new_offer else None,
                      "value": plan.new_offer.value if plan.new_offer else None,
                      "reason": reason})
@@ -475,19 +499,26 @@ def force_forfeit(
     *,
     actor: str | None = None,
     reason: str = "commissioner",
+    by_commissioner: bool = True,
     rules: RosterRules = DEFAULT_RULES,
 ) -> dict:
     """Commissioner: drop a team that is stalling a board, or one whose offer is no
     longer legal. Routes to a decline when the board is an unresolved RFA window --
-    the equivalent intervention there."""
+    the equivalent intervention there.
+
+    Also the one move the turn clock makes (sweep_expired_turns), which is why
+    `by_commissioner` is a parameter: the mechanics of an expiry and an intervention
+    are identical, but only one of them is a person."""
     with engine.connect() as conn:
         status = conn.execute(
             text("select status from fa_auctions where id = :a"), {"a": auction_id}
         ).scalar()
     if status == STATUS_MATCHING:
-        return decline_match(engine, auction_id, actor=actor, forced=True, rules=rules)
+        return decline_match(engine, auction_id, actor=actor, forced=True,
+                             by_commissioner=by_commissioner, reason=reason, rules=rules)
     return place_bid(engine, auction_id, team_slug, BID_FORFEIT, actor=actor,
-                     forced=True, reason=reason, rules=rules)
+                     forced=True, by_commissioner=by_commissioner, reason=reason,
+                     rules=rules)
 
 
 def award_auction(
@@ -528,6 +559,75 @@ def award_auction(
 
 
 # ---------------------------------------------------------------------------
+# The turn clock.
+# ---------------------------------------------------------------------------
+# Sequential bidding is strictly ordered: the board waits on exactly one team, and a
+# manager who stops answering stops the board, the round, and eventually the whole
+# offseason. Before this there was no timer at all -- the only remedy was the
+# commissioner noticing and forcing a forfeit by hand.
+#
+# There is no scheduler in this deployment (the one background slot belongs to a
+# period or a playoff round), so the clock is LAZY: it advances whenever anyone reads
+# the free-agency state, which the page polls while a board is live. That is enough
+# for the property that matters -- a stalled board cannot stay stalled while anybody
+# is watching -- and it needs no infrastructure. The common case is one indexed count
+# that returns zero.
+#
+# What expiry does is exactly what the commissioner would have done by hand: forfeit
+# the team on the clock, or decline the match window. It is never applied to
+# 'awaiting_award', which is waiting on the COMMISSIONER -- expiring the league's own
+# turn would be nonsense.
+def overdue_turns(conn, *, limit_hours: int = FA_TURN_LIMIT_HOURS) -> list[dict]:
+    """Boards whose turn has run out, oldest first. Cheap enough to call on every
+    read: one index scan over the live boards of the open period."""
+    rows = conn.execute(
+        text("select a.id, a.status, a.waiting_since, "
+             "coalesce(tt.slug, rt.slug) as team, "
+             "coalesce(tt.name, rt.name) as team_name, p.name as player_name "
+             "from fa_auctions a "
+             "join fa_rounds r on r.id = a.round_id "
+             "join fa_periods f on f.id = r.period_id and f.status = 'open' "
+             "join players p on p.id = a.player_id "
+             "left join teams tt on tt.id = a.turn_team_id "
+             "left join teams rt on rt.id = a.rights_team_id "
+             "where a.status in ('matching', 'bidding') "
+             "  and a.waiting_since is not null "
+             "  and a.waiting_since < now() - make_interval(hours => :h) "
+             "order by a.waiting_since"),
+        {"h": limit_hours},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def sweep_expired_turns(engine: Engine, *, limit_hours: int = FA_TURN_LIMIT_HOURS,
+                        rules: RosterRules = DEFAULT_RULES) -> list[dict]:
+    """Act for every team that has run out its turn. Returns what was done, one entry
+    per board, so a caller can tell the league about it.
+
+    Races are expected and ignored: two managers polling at once both see the same
+    overdue board, and the one that loses the auction lock finds it already moved on.
+    Each board is its own transaction (force_forfeit opens one), so a board that
+    cannot be swept -- an offer that has since become illegal, say -- does not stop
+    the others."""
+    with engine.connect() as conn:
+        due = overdue_turns(conn, limit_hours=limit_hours)
+    swept = []
+    for board in due:
+        try:
+            force_forfeit(
+                engine, int(board["id"]), board["team"],
+                reason=f"turn expired: no response within {limit_hours}h",
+                by_commissioner=False, rules=rules,
+            )
+        except (FreeAgencyError, BidError, SigningError):
+            continue                    # already moved on, or cannot be forfeited
+        swept.append({"auction_id": int(board["id"]), "player": board["player_name"],
+                      "team": board["team"], "team_name": board["team_name"],
+                      "was": board["status"]})
+    return swept
+
+
+# ---------------------------------------------------------------------------
 # Hooks other modules call, inside THEIR transaction.
 # ---------------------------------------------------------------------------
 def open_period_row(conn) -> dict | None:
@@ -562,10 +662,15 @@ def void_player_auctions(conn, player_uuids, *, reason: str) -> int:
 # ---------------------------------------------------------------------------
 # Reads.
 # ---------------------------------------------------------------------------
-def free_agency_state(engine: Engine) -> dict:
-    """The period/round phase plus every live board -- the backbone of the state
+def free_agency_state(engine: Engine, *,
+                      turn_limit_hours: int = FA_TURN_LIMIT_HOURS) -> dict:
+    """The period/round phase plus every PUBLIC board -- the backbone of the state
     document the website polls. Per-viewer detail (your offers, whose turn it is for
-    your teams) is layered on by the API, which knows who is asking."""
+    your teams) is layered on by the API, which knows who is asking.
+
+    Boards still 'collecting' are withheld: they belong to a round that is still taking
+    sealed offers, and both the offers on them and the fact that they exist at all are
+    the sealed information. See PUBLIC_AUCTION_STATUSES."""
     with engine.connect() as conn:
         period = _open_period(conn)
         if period is None:
@@ -580,14 +685,22 @@ def free_agency_state(engine: Engine) -> dict:
             text("select a.id, a.status, a.restricted, a.no_raise_streak, "
                  "a.turn_team_id::text as turn_team_id, tt.slug as turn_team, "
                  "tt.name as turn_team_name, a.waiting_since, "
+                 # The turn clock, computed in the database so the countdown is
+                 # against the server's clock rather than the browser's. Null on a
+                 # board that isn't waiting on a team (awaiting_award).
+                 "case when a.status in ('matching','bidding') "
+                 "     then a.waiting_since + make_interval(hours => :h) end as turn_deadline, "
+                 "case when a.status in ('matching','bidding') "
+                 "     then floor(extract(epoch from (a.waiting_since "
+                 "          + make_interval(hours => :h) - now())))::bigint end as turn_seconds_left, "
                  "a.rights_team_id::text as rights_team_id, rt.slug as rights_team, "
                  "p.legacy_id as player_id, p.name as player_name, p.position "
                  "from fa_auctions a join players p on p.id = a.player_id "
                  "left join teams tt on tt.id = a.turn_team_id "
                  "left join teams rt on rt.id = a.rights_team_id "
-                 f"where a.round_id = cast(:r as uuid) and a.status in {_IN_LIVE} "
+                 f"where a.round_id = cast(:r as uuid) and a.status in {_IN_PUBLIC} "
                  "order by p.name"),
-            {"r": rnd["id"]},
+            {"r": rnd["id"], "h": turn_limit_hours},
         ).mappings().all()
         out = []
         for b in boards:
@@ -610,6 +723,68 @@ def free_agency_state(engine: Engine) -> dict:
         "round": dict(rnd) if rnd else None,
         "auctions": out,
         "signings": [dict(s) for s in signings],
+        "turn_limit_hours": turn_limit_hours,
+    }
+
+
+def period_history(engine: Engine, season: int | None = None) -> dict:
+    """Who bid what, for every board that has FINISHED -- the public record of a
+    closed round.
+
+    Everything here was sealed once and is not any more. A board only leaves
+    'collecting' when its round closes, and at that moment the offers on it become
+    the public thing everyone is watching; a resolved or void board is that same
+    information after the fact. So this reveals every offer ever made on a finished
+    board -- including the losing ones, which is the whole point. What it will not
+    show is a board still collecting: those rounds are still sealed (see
+    PUBLIC_AUCTION_STATUSES), and they are excluded by status, not by round.
+
+    `season` selects a period; the default is the most recent one, open or closed, so
+    the page has something to show the moment a round resolves."""
+    with engine.connect() as conn:
+        period = conn.execute(
+            text("select id::text as id, season, status from fa_periods "
+                 + ("where season = :s " if season is not None else "")
+                 + "order by season desc limit 1"),
+            {"s": season} if season is not None else {},
+        ).mappings().first()
+        if period is None:
+            return {"period": None, "boards": []}
+        boards = conn.execute(
+            text("select a.id, r.round_number, a.status, a.outcome, a.restricted, "
+                 "a.signed_term, a.signed_value, a.resolved_at, a.award_reason, "
+                 "p.legacy_id as player_id, p.name as player_name, p.position, "
+                 "wt.slug as winning_team, wt.name as winning_team_name, "
+                 "rt.slug as rights_team, rt.name as rights_team_name "
+                 "from fa_auctions a "
+                 "join fa_rounds r on r.id = a.round_id "
+                 "join players p on p.id = a.player_id "
+                 "left join teams wt on wt.id = a.winning_team_id "
+                 "left join teams rt on rt.id = a.rights_team_id "
+                 "where r.period_id = cast(:p as uuid) "
+                 "  and a.status in ('resolved', 'void') "
+                 "order by r.round_number, a.resolved_at, p.name"),
+            {"p": period["id"]},
+        ).mappings().all()
+        # Every offer on those boards, in one query rather than one per board: a
+        # period can hold a few hundred, and this is a page load.
+        ids = [int(b["id"]) for b in boards]
+        offers: dict[int, list[dict]] = {i: [] for i in ids}
+        if ids:
+            for o in conn.execute(
+                text("select o.auction_id, o.id, t.slug as team, t.name as team_name, "
+                     "o.term, o.value, o.status, o.origin, o.is_rfa_match, o.submitted_at "
+                     "from fa_offers o join teams t on t.id = o.team_id "
+                     "where o.auction_id = any(:a) order by o.auction_id, o.id"),
+                {"a": ids},
+            ).mappings().all():
+                offers[int(o["auction_id"])].append(
+                    {k: v for k, v in o.items() if k != "auction_id"})
+    return {
+        "period": {"id": period["id"], "season": period["season"],
+                   "status": period["status"]},
+        "boards": [{**dict(b), "id": int(b["id"]), "offers": offers[int(b["id"])]}
+                   for b in boards],
     }
 
 
@@ -634,6 +809,7 @@ def team_offers(engine: Engine, team_slug: str) -> list[dict]:
 # Internals.
 # ---------------------------------------------------------------------------
 _IN_LIVE = "(" + ", ".join(f"'{s}'" for s in LIVE_AUCTION_STATUSES) + ")"
+_IN_PUBLIC = "(" + ", ".join(f"'{s}'" for s in PUBLIC_AUCTION_STATUSES) + ")"
 
 
 def _open_period(conn, *, for_update: bool = False) -> dict | None:

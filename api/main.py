@@ -37,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from handball import contract_admin
 from handball import free_agency as fa
 from handball import league_structure
 from handball import offseason
@@ -125,6 +126,22 @@ class TeamActionBody(BaseModel):
     """A commissioner intervention aimed at one team (force-forfeit, award)."""
     team: str
     reason: str | None = None
+
+
+class ContractOverrideBody(BaseModel):
+    """One explicit (re)assignment in a bulk contract change. Bounds here only keep
+    nonsense out of the query; the league limits are salary_cap.validate_contract."""
+    player_id: str
+    term: int = Field(ge=1)
+    value: int = Field(ge=0)
+
+
+class BulkContractBody(BaseModel):
+    """A commissioner bulk contract change (handball/contract_admin.py). Defaults to
+    a dry run: the plan comes back either way, and only `dry_run: false` writes it."""
+    strategy: str = Field(default=contract_admin.RESTART)
+    overrides: list[ContractOverrideBody] = Field(default_factory=list)
+    dry_run: bool = True
 
 
 class SigningBody(BaseModel):
@@ -319,6 +336,39 @@ def team_cap(slug: str, mgr: Manager = Depends(get_current_manager)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+# -- bulk contract administration ------------------------------------------
+# The commissioner's repair path for rosters that predate the contract model. See
+# handball/contract_admin.py for why a league can need it at all.
+@app.get("/contracts/audit")
+def contracts_audit(mgr: Manager = Depends(get_current_manager)):
+    """What the league's contracts look like, and what the next rollover would do to
+    them. Read-only, and the thing to look at before deciding whether a bulk change
+    is needed. Commissioner-only: it is a whole-league view of every deal."""
+    _require_commissioner(mgr)
+    return contract_admin.audit(engine)
+
+
+@app.post("/contracts/bulk")
+def contracts_bulk(body: BulkContractBody, mgr: Manager = Depends(get_current_manager)):
+    """(Re)assign contract terms in bulk. Returns the PLAN -- every before/after, the
+    payrolls it moves, and how many players the next rollover would then release --
+    and applies it only when `dry_run` is false.
+
+    Refused while a period is simulating, for the same reason a signing is: the
+    simulation loads each team once, and rewriting contracts underneath a half-played
+    season is not something the run would notice."""
+    _require_commissioner(mgr)
+    _require_no_run_in_flight()
+    overrides = [contract_admin.Override(player_id=o.player_id, term=o.term, value=o.value)
+                 for o in body.overrides]
+    run = contract_admin.plan if body.dry_run else contract_admin.apply_bulk
+    try:
+        plan = run(engine, strategy=body.strategy, overrides=overrides)
+    except contract_admin.BulkContractError as e:
+        raise HTTPException(status_code=400, detail={"problems": e.problems})
+    return {"dry_run": body.dry_run, **plan.as_dict()}
+
+
 @app.post("/signings")
 def post_signing(body: SigningBody, mgr: Manager = Depends(get_current_manager)):
     """Sign a free agent to the fixed league-minimum deal (1 year, $0M). No
@@ -457,8 +507,15 @@ def free_agency_state(mgr: Manager = Depends(get_current_manager)):
     boards waiting on them. `period` is null when no market is open, which is the
     signal to render the ordinary pool page.
 
-    Sealed offers stay sealed: a manager gets their OWN offers here, and the boards
-    only exist once the round that produced them has closed."""
+    Sealed offers stay sealed: a manager gets their OWN offers here, and a board is
+    withheld until the round that produced it has closed (fa.PUBLIC_AUCTION_STATUSES).
+
+    Reading also ADVANCES THE TURN CLOCK. There is no scheduler here, and the page
+    polls this endpoint while a board is live, so the sweep rides along with it: any
+    team that has sat on its turn past the limit is forfeited before the state is
+    read, which is what stops one unresponsive manager halting the round. It is a
+    single indexed lookup when nothing is overdue."""
+    swept = fa.sweep_expired_turns(engine)
     state = fa.free_agency_state(engine)
     teams = []
     waiting = 0
@@ -480,7 +537,16 @@ def free_agency_state(mgr: Manager = Depends(get_current_manager)):
             "action_required": actions,
         })
     return {**state, "teams": teams, "your_turn_count": waiting,
-            "is_commissioner": mgr.is_commissioner}
+            "is_commissioner": mgr.is_commissioner, "swept": swept}
+
+
+@app.get("/free-agency/history")
+def free_agency_history(season: int | None = None,
+                        mgr: Manager = Depends(get_current_manager)):
+    """Who bid what on every board that has finished -- the public record of a closed
+    round, losing offers included. Readable by any authenticated manager: a board only
+    appears here once it has resolved, by which time nothing on it is sealed."""
+    return fa.period_history(engine, season)
 
 
 # -- season simulation -----------------------------------------------------
