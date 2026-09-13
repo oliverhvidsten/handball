@@ -3,11 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../auth";
 import { abbrev } from "../hooks";
+import { teamLogoUrl } from "../lib/api";
 import { TeamCard, Alert } from "../ds";
 
 interface Row {
   slug: string;
-  name: string;
+  name: string;              // the city; the key the division layout below uses
+  nickname: string | null;   // manager-set team name, shown after the city
+  abbr: string | null;       // manager-set mark, else derived from the city
+  logo_version: number;
   wins: number;
   losses: number;
   ties: number;
@@ -49,7 +53,7 @@ export default function Teams() {
   useEffect(() => {
     supabase
       .from("teams")
-      .select("slug, name, wins, losses, ties")
+      .select("slug, name, nickname, abbr, logo_version, wins, losses, ties")
       .order("wins", { ascending: false })
       .then(({ data, error }) => {
         if (error) setErr(error.message);
@@ -64,7 +68,12 @@ export default function Teams() {
   const card = (r: Row) => (
     <TeamCard
       key={r.slug}
-      team={{ name: r.name, abbr: abbrev(r.name), wins: r.wins, losses: r.losses, ties: r.ties, rank: rankByName.get(r.name) }}
+      team={{
+        name: r.nickname ? `${r.name} ${r.nickname}` : r.name,
+        abbr: r.abbr ?? abbrev(r.name),
+        logo: teamLogoUrl(r.slug, r.logo_version),
+        wins: r.wins, losses: r.losses, ties: r.ties, rank: rankByName.get(r.name),
+      }}
       yours={ownedSlugs.has(r.slug)}
       onClick={() => nav(`/teams/${r.slug}`)}
     />

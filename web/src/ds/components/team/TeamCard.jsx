@@ -2,7 +2,7 @@ import React from "react";
 
 /**
  * NHA TeamCard — a team tile for the Teams directory grid.
- * team: { name, abbr, wins, losses, ties, rank?, streak? }
+ * team: { name, abbr, logo?, wins, losses, ties, rank?, streak? } -- `logo` is an image URL; when set it fills the mark box in place of the abbreviation.
  */
 export function TeamCard({ team, yours = false, onClick, style = {} }) {
   const t = team || {};
@@ -33,9 +33,12 @@ export function TeamCard({ team, yours = false, onClick, style = {} }) {
         display: "inline-flex", alignItems: "center", justifyContent: "center",
         background: yours ? "var(--green-600)" : "var(--ink-900)", color: "#fff",
         fontFamily: "var(--font-display)", fontWeight: "var(--weight-black)", fontSize: "var(--text-md)",
-        letterSpacing: "0.02em",
+        letterSpacing: "0.02em", overflow: "hidden",
       }}>
-        {t.abbr}
+        {t.logo
+          ? <img src={t.logo} alt={`${t.name} logo`} width={42} height={42}
+                 style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#fff" }} />
+          : t.abbr}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

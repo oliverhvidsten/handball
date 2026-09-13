@@ -21,6 +21,7 @@ export const TeamSwitcher: C;
 export const NotificationBadge: C;
 
 export const StatCard: C;
+export const CapMeter: C;
 export const StatChip: C;
 export const StatusPill: C;
 export const DataTable: C;

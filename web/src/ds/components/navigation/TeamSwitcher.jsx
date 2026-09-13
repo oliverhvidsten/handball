@@ -4,7 +4,7 @@ import React from "react";
  * NHA TeamSwitcher — active-team context control for managers who own
  * multiple teams. Sits in the TopNav (dark chrome).
  *
- * teams: [{ abbr, name, wins, losses, ties, alerts?, rank? }]
+ * teams: [{ abbr, name, logo?, wins, losses, ties, alerts?, rank? }] -- `logo` (image URL) fills the mark box in place of the abbreviation
  * activeAbbr: the currently selected team's abbr
  */
 export function TeamSwitcher({ teams = [], activeAbbr, onChange, style = {} }) {
@@ -34,8 +34,10 @@ export function TeamSwitcher({ teams = [], activeAbbr, onChange, style = {} }) {
         <span style={{
           width: 24, height: 24, borderRadius: "var(--radius-xs)", background: "var(--green-500)", color: "var(--ink-950)",
           display: "inline-flex", alignItems: "center", justifyContent: "center",
-          fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 10,
-        }}>{active.abbr}</span>
+          fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 10, overflow: "hidden",
+        }}>{active.logo
+          ? <img src={active.logo} alt="" width={24} height={24} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#fff" }} />
+          : active.abbr}</span>
         <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.1 }}>
           <span style={{ fontSize: "var(--text-sm)", fontWeight: 700 }}>{active.name}</span>
           <span style={{ fontSize: "var(--text-2xs)", color: "rgba(255,255,255,0.55)", fontVariantNumeric: "tabular-nums" }}>{rec(active)}</span>
@@ -72,8 +74,10 @@ export function TeamSwitcher({ teams = [], activeAbbr, onChange, style = {} }) {
                   width: 28, height: 28, borderRadius: "var(--radius-sm)", flex: "none",
                   background: on ? "var(--green-600)" : "var(--ink-900)", color: "#fff",
                   display: "inline-flex", alignItems: "center", justifyContent: "center",
-                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 10,
-                }}>{t.abbr}</span>
+                  fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 10, overflow: "hidden",
+                }}>{t.logo
+                  ? <img src={t.logo} alt="" width={28} height={28} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#fff" }} />
+                  : t.abbr}</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: "block", fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-body)" }}>{t.name}</span>
                   <span style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>{rec(t)}{t.rank ? ` · #${t.rank}` : ""}</span>

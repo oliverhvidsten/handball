@@ -13,6 +13,7 @@ export { TeamSwitcher } from "./components/navigation/TeamSwitcher.jsx";
 export { NotificationBadge } from "./components/navigation/NotificationBadge.jsx";
 
 export { StatCard } from "./components/data/StatCard.jsx";
+export { CapMeter } from "./components/data/CapMeter.jsx";
 export { StatChip } from "./components/data/StatChip.jsx";
 export { StatusPill } from "./components/data/StatusPill.jsx";
 export { DataTable } from "./components/data/DataTable.jsx";

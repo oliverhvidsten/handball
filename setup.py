@@ -23,6 +23,8 @@ setup(
             # POST /draft/prospects accepts a multipart file upload (api/draft.py);
             # FastAPI needs this to parse the form, else that branch 400s.
             "python-multipart>=0.0.9",
+            # PUT /teams/{slug}/logo re-encodes uploads to a bounded PNG (handball/team_settings.py).
+            "pillow>=10",
         ],
     },
 )

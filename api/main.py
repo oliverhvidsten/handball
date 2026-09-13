@@ -72,6 +72,7 @@ from api.deps import (
 )
 from api.draft import router as draft_router
 from api.hall_of_fame import router as hall_of_fame_router
+from api.teams import router as teams_router
 from api.voting import router as voting_router
 
 app = FastAPI(title="NHA API")
@@ -86,7 +87,7 @@ _origins = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _origins if o.strip()],
-    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -98,6 +99,7 @@ app.include_router(draft_router)
 app.include_router(voting_router)
 app.include_router(contracts_router)
 app.include_router(hall_of_fame_router)
+app.include_router(teams_router)
 
 
 # -- request bodies --------------------------------------------------------
