@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
 import { TopNav, TeamSwitcher } from "./ds";
+import { teamLogoUrl } from "./lib/api";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Teams from "./pages/Teams";
@@ -21,6 +22,7 @@ import Awards from "./pages/Awards";
 import HallOfFame from "./pages/HallOfFame";
 import Commissioner from "./pages/Commissioner";
 import Account from "./pages/Account";
+import Settings from "./pages/Settings";
 import { usePendingTradeCount, useYourTurnCount } from "./hooks";
 
 import { NAV } from "./nav";
@@ -59,7 +61,10 @@ export default function App() {
   const switcher =
     teams.length > 0 ? (
       <TeamSwitcher
-        teams={teams.map((t) => ({ abbr: t.abbr, name: t.name, wins: t.wins, losses: t.losses, ties: t.ties }))}
+        teams={teams.map((t) => ({
+          abbr: t.abbr, name: t.displayName, logo: teamLogoUrl(t.slug, t.logoVersion),
+          wins: t.wins, losses: t.losses, ties: t.ties,
+        }))}
         activeAbbr={activeTeam?.abbr}
         onChange={(abbr: string) => {
           const t = teams.find((x) => x.abbr === abbr);
@@ -96,6 +101,7 @@ export default function App() {
           <Route path="/schedule" element={<Schedule />} />
           <Route path="/trades" element={<Trades />} />
           <Route path="/free-agents" element={<FreeAgents />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/draft" element={<Draft />} />
           <Route path="/playoffs" element={<Playoffs />} />
           <Route path="/vote" element={<Vote />} />

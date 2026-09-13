@@ -26,6 +26,7 @@ export const NAV: NavItem[] = [
   { label: "Roster", to: "/roster", scope: "team" },
   { label: "Trades", to: "/trades", scope: "team" },
   { label: "Free Agents", to: "/free-agents", scope: "team" },
+  { label: "Settings", to: "/settings", scope: "team" },
   { label: "Standings", to: "/standings", scope: "league" },
   { label: "Schedule", to: "/schedule", scope: "league" },
   { label: "Teams", to: "/teams", scope: "league", group: "League" },

@@ -61,3 +61,31 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
+
+/**
+ * Authenticated multipart upload (a file field). Same token and error handling as
+ * apiFetch, but no Content-Type: the browser sets the multipart boundary itself.
+ */
+export async function apiUpload<T = unknown>(path: string, form: FormData, method = "PUT"): Promise<T> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new ApiError(401, "not signed in");
+  const res = await fetch(`${API_URL}${path}`, { method, body: form, headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    let detail: unknown = await res.json().catch(() => null);
+    if (detail && typeof detail === "object" && "detail" in detail) detail = (detail as { detail: unknown }).detail;
+    throw new ApiError(res.status, typeof detail === "string" ? detail : res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
+/**
+ * The URL of a team's logo, or null when it has none (logo_version 0). The version
+ * is in the URL so a new upload is a new URL: the API serves the image with a
+ * one-year immutable cache header and the browser never shows a stale one. No auth
+ * on this route -- an <img> can't send a token, and a logo isn't a secret.
+ */
+export function teamLogoUrl(slug: string, version: number | null | undefined): string | null {
+  if (!version || version <= 0) return null;
+  return `${API_URL}/teams/${encodeURIComponent(slug)}/logo?v=${version}`;
+}
