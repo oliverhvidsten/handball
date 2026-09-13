@@ -39,10 +39,13 @@ interface SeasonState {
 }
 interface Blocker { check: string; subject: string; message: string; }
 interface Candidate { legacy_id: string; name: string; age: number; position: string; team_name: string | null; }
-// Bulk contract administration (handball/contract_admin.py). `expiring_next_rollover`
-// is the number that matters: how many rostered players the next rollover releases.
+// Bulk contract administration (handball/contract_admin.py). `expired` is the number
+// that calls for the tool: counters at or below zero, which the rollover would
+// release without a contract ever having run its course. `expiring_next_rollover`
+// is a normal league fact (players on the last year of a real deal).
 interface ContractAudit {
   rostered: number;
+  expired: number;
   expiring_next_rollover: number;
   restart_runnable: boolean;
   restart_would_change?: number;
@@ -472,19 +475,21 @@ export default function Commissioner() {
       {/* -- contracts -----------------------------------------------------
           Rosters imported before contracts were modelled carry a years_remaining
           nobody ever set, and the rollover releases everyone at or below zero. This
-          is the bulk repair (handball/contract_admin.py). Shown only when there is
-          something to say: a healthy league renders nothing here. */}
-      {contracts != null && contracts.expiring_next_rollover > 0 && (
+          is the bulk repair (handball/contract_admin.py). Shown only while some
+          counter has actually run out: a league where every player is simply on
+          some year of a real deal renders nothing here, however many of those deals
+          end this season -- that is free agency, not a fault. */}
+      {contracts != null && (contracts.expired > 0 || contracts.restart_runnable === false) && (
         <>
           <h3 style={{ margin: "28px 0 10px" }}>Contracts</h3>
           <Alert
-            tone={contracts.expiring_next_rollover === contracts.rostered ? "error" : "warning"}
-            title={`${contracts.expiring_next_rollover} of ${contracts.rostered} rostered players expire at the next rollover`}
+            tone={contracts.expired === contracts.rostered ? "error" : "warning"}
+            title={`${contracts.expired} of ${contracts.rostered} rostered players have a contract counter that has run out`}
             style={{ marginBottom: 12 }}
           >
-            {contracts.expiring_next_rollover === contracts.rostered
+            {contracts.expired === contracts.rostered
               ? "That is every player in the league. Contracts imported before the contract model carry a countdown that was never set, and advancing the season would empty all 32 rosters."
-              : "Their contracts run out when the season advances, and they become free agents."}
+              : `The rollover releases everyone at or below zero. Including players on the last year of a real deal, ${contracts.expiring_next_rollover} would reach free agency.`}
           </Alert>
 
           {contracts.restart_runnable === false && (
