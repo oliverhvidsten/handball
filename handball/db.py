@@ -52,6 +52,13 @@ def is_local_db(url: str | None = None) -> bool:
     return "localhost" in u or "127.0.0.1" in u
 
 
+# One engine per (url, options) for the life of the process. api/auth.py called
+# get_engine() on EVERY authenticated request, and every call built a fresh Engine
+# with its own pool -- a connection per request that lingered until garbage
+# collection, which against a 15-client pooler is a lockout waiting to happen.
+_ENGINES: dict[tuple, Engine] = {}
+
+
 def get_engine(url: str | None = None, **kwargs) -> Engine:
     # Supabase's session-mode pooler admits 15 clients for the whole project, and
     # SQLAlchemy's default pool (5 + 10 overflow) would happily hold all of them idle
@@ -60,9 +67,16 @@ def get_engine(url: str | None = None, **kwargs) -> Engine:
     # script still fit, drop idle connections after ten minutes, and ping before
     # reuse so a connection the pooler closed is replaced rather than erroring.
     # Callers may still override any of these.
-    kwargs.setdefault("pool_size", 3)
-    kwargs.setdefault("max_overflow", 2)
-    kwargs.setdefault("pool_recycle", 600)
+    key = (url or db_url(), tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
+    cached = _ENGINES.get(key)
+    if cached is not None:
+        return cached
+    # Alembic passes poolclass=NullPool (no pooling at all), which takes none of
+    # the sizing arguments -- so they apply only when the default QueuePool is in play.
+    if "poolclass" not in kwargs:
+        kwargs.setdefault("pool_size", 3)
+        kwargs.setdefault("max_overflow", 2)
+        kwargs.setdefault("pool_recycle", 600)
     kwargs.setdefault("pool_pre_ping", True)
     engine = create_engine(url or db_url(), future=True, **kwargs)
 
@@ -79,4 +93,5 @@ def get_engine(url: str | None = None, **kwargs) -> Engine:
         # full precision and every reuse silently reverts to truncated floats.
         dbapi_conn.commit()
 
+    _ENGINES[key] = engine
     return engine
