@@ -444,6 +444,10 @@ def audit(engine: Engine) -> dict:
     current = plan(engine, strategy="none")
     report = {
         "rostered": sum(current.expiry_cohorts.values()),
+        # Counters that have RUN OUT (<= 0): the thing this tool repairs. Distinct
+        # from expiring_next_rollover, which is a normal league fact -- players on
+        # the last year of a real deal -- and not a call to action.
+        "expired": sum(n for y, n in current.expiry_cohorts.items() if y <= 0),
         "expiring_next_rollover": current.expiring_next_rollover,
         "expiry_cohorts": {str(k): v for k, v in sorted(current.expiry_cohorts.items())},
     }

@@ -135,6 +135,46 @@ def offer_ceiling(ctx: SigningContext) -> int:
 
 
 # -- the database side -------------------------------------------------------
+# -- when the pool is open -----------------------------------------------------
+_POOL_SEASON_SQL = "select season, periods_run from season_state order by season desc limit 1"
+_POOL_MARKET_SQL = ("select status::text as status from fa_periods where season = :s "
+                    "order by opened_at desc limit 1")
+
+
+def pool_status(conn) -> dict:
+    """Whether a free agent may be signed at the fixed minimum deal right now, and if
+    not, why -- in a sentence written to be shown to the manager.
+
+    The rulebook's offseason runs rollover -> draft -> free agency, and only then the
+    season. Everyone whose contract ran out at the rollover (and every undrafted
+    prospect) is meant to reach the MARKET, where real contracts are offered. So:
+
+      market_open      an offseason period is open: bid, don't buy
+      awaiting_market  it is the offseason (no period of the active season has run)
+                       and this season's market has not closed yet -- the expired
+                       players are waiting for it, and signing one at $0 first would
+                       be the hole the market exists to close
+      open             otherwise: the market has had its run (or the season is under
+                       way), and what is left in the pool goes for the minimum
+
+    A league with no season_state row yet has never had a rollover, so nobody in its
+    pool is owed a market; that pool is open."""
+    if conn.execute(text("select 1 from fa_periods where status = 'open' limit 1")).first():
+        return {"open": False, "phase": "market_open",
+                "reason": "free agency is open -- make an offer through the auction "
+                          "instead of signing at the minimum"}
+    season = conn.execute(text(_POOL_SEASON_SQL)).mappings().first()
+    if season is None or int(season["periods_run"]) > 0:
+        return {"open": True, "phase": "open", "reason": None}
+    market = conn.execute(text(_POOL_MARKET_SQL), {"s": int(season["season"])}).mappings().first()
+    if market is not None and market["status"] == "closed":
+        return {"open": True, "phase": "open", "reason": None}
+    return {"open": False, "phase": "awaiting_market",
+            "reason": f"the {int(season['season'])} offseason market has not run yet -- "
+                      "players in the pool are offered real contracts there first, and "
+                      "minimum signings open once the commissioner closes free agency"}
+
+
 def sign_free_agent(
     engine: Engine,
     team_slug: str,
@@ -157,18 +197,15 @@ def sign_free_agent(
     position (mid-offseason, after retirements) must not be rejected for that, so the
     new player stays unplaced until the roster is whole. `placed` in the return says
     which happened."""
-    from handball.free_agency import open_period_row       # lazy: free_agency imports us
-
     term, value = FREE_AGENT_CONTRACT_YEARS, FREE_AGENT_CONTRACT_SALARY
     with engine.begin() as conn:
-        # While the offseason market is open, the pool is closed. Otherwise a manager
-        # could scoop a player out from under a live auction on a $0 deal, which
-        # defeats the whole mechanism; inside a period the equivalent move is a $0
-        # offer, which anyone can beat.
-        if open_period_row(conn) is not None:
-            raise SigningError(
-                "free agency is open -- make an offer through the auction instead of "
-                "signing at the minimum")
+        # The pool is a shop only when the market is not owed or running -- see
+        # pool_status. Otherwise a manager could scoop a player out from under a live
+        # auction (or before it ever opens) on a $0 deal, which defeats the market;
+        # inside a period the equivalent move is a $0 offer, which anyone can beat.
+        pool = pool_status(conn)
+        if not pool["open"]:
+            raise SigningError(pool["reason"])
         team = team_row(conn, team_slug)
         # Lock the TEAM first, then the player -- always in that order, so concurrent
         # signings can't deadlock. The team lock serializes this team's signings

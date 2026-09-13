@@ -8,6 +8,7 @@ only (truncates).
 import pytest
 from sqlalchemy import text
 
+from handball import signing_service as sign
 from handball.db import get_engine, is_local_db
 from handball.domain import Player, Team
 from handball.league_views import DEFAULT_RULES
@@ -32,7 +33,7 @@ except Exception:  # noqa: BLE001
 pytestmark = pytest.mark.skipif(not _PG_OK, reason="Postgres dev DB not available/migrated")
 
 _TABLES = ("teams players injuries awards games player_game_lines "
-           "draft_picks managers trades trade_assets")
+           "draft_picks managers trades trade_assets season_state fa_periods")
 
 
 @pytest.fixture(autouse=True)
@@ -301,3 +302,69 @@ def test_team_cap_report_tracks_a_signing(league):
     assert after["payroll"] == before["payroll"]          # a $0 deal moves no money
     assert after["roster_size"] == before["roster_size"] + 1
     assert after["roster_spots"] == before["roster_spots"] - 1
+
+
+# -- when the pool is open ------------------------------------------------------
+# The rulebook's offseason is rollover -> draft -> free agency -> season. Between the
+# rollover and the market, everyone whose deal ran out sits in the pool; they must
+# reach the market, not be scooped at $0 first.
+def _season(season: int, periods_run: int) -> None:
+    with _engine.begin() as c:
+        c.execute(text("insert into season_state (season, periods_run) values (:s, :p) "
+                       "on conflict (season) do update set periods_run = :p"),
+                  {"s": season, "p": periods_run})
+
+
+def _market(season: int, status: str) -> None:
+    with _engine.begin() as c:
+        c.execute(text("insert into fa_periods (season, status, opened_at, closed_at) "
+                       "values (:s, cast(:st as fa_period_status), now(), "
+                       "case when :st = 'closed' then now() end)"),
+                  {"s": season, "st": status})
+
+
+def test_the_pool_is_open_before_any_season_exists(league):
+    _free_agent("fa1")
+    assert sign.sign_free_agent(_engine, "Boston", "fa1")["placed"] is True
+
+
+def test_the_pool_is_shut_in_the_offseason_until_the_market_has_closed(league):
+    _free_agent("fa1")
+    _season(2027, periods_run=0)
+    with pytest.raises(sign.SigningError, match="2027 offseason market has not run yet"):
+        sign.sign_free_agent(_engine, "Boston", "fa1")
+    with _engine.connect() as c:
+        assert sign.pool_status(c)["phase"] == "awaiting_market"
+
+
+def test_the_pool_opens_once_this_season_s_market_has_closed(league):
+    _free_agent("fa1")
+    _season(2027, periods_run=0)
+    _market(2027, "closed")
+    with _engine.connect() as c:
+        assert sign.pool_status(c) == {"open": True, "phase": "open", "reason": None}
+    assert sign.sign_free_agent(_engine, "Boston", "fa1")["team"] == "Boston"
+
+
+def test_a_previous_season_s_market_does_not_open_this_offseason_s_pool(league):
+    _free_agent("fa1")
+    _market(2026, "closed")
+    _season(2027, periods_run=0)
+    with pytest.raises(sign.SigningError, match="2027 offseason market"):
+        sign.sign_free_agent(_engine, "Boston", "fa1")
+
+
+def test_the_pool_is_open_all_season_long(league):
+    _free_agent("fa1")
+    _season(2027, periods_run=1)          # no market ever ran; the season is under way
+    assert sign.sign_free_agent(_engine, "Boston", "fa1")["team"] == "Boston"
+
+
+def test_the_pool_is_shut_while_the_market_is_open(league):
+    _free_agent("fa1")
+    _season(2027, periods_run=0)
+    _market(2027, "open")
+    with pytest.raises(sign.SigningError, match="free agency is open"):
+        sign.sign_free_agent(_engine, "Boston", "fa1")
+    with _engine.connect() as c:
+        assert sign.pool_status(c)["phase"] == "market_open"

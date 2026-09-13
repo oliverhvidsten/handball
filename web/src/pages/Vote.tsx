@@ -75,7 +75,7 @@ export default function Vote() {
       {!anythingOpen && (
         <EmptyState
           title="No ballot is open"
-          message="All-Star voting opens at the break, and award voting opens once the regular season is complete. Your ballot will appear here."
+          message="All-Star voting opens after period 3, and award voting opens after period 5 once the regular season is complete. Your ballot will appear here."
         />
       )}
 
@@ -264,7 +264,7 @@ function AllStarBallots({ state, onErr, onNote, onSaved }: SectionProps) {
     return (
       <EmptyState
         title="All-Star voting is not open yet"
-        message="The polls open at the break, once the first half of the season has been played."
+        message="Voting opens automatically once period 3 of 5 has been simulated, and closes when the commissioner plays the game before period 4."
       />
     );
   }

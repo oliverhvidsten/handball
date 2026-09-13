@@ -673,8 +673,11 @@ def free_agency_state(engine: Engine, *,
     the sealed information. See PUBLIC_AUCTION_STATUSES."""
     with engine.connect() as conn:
         period = _open_period(conn)
+        # Whether the pool takes minimum signings right now, and why not if not --
+        # the page shows the reason in place of the Sign button.
+        pool = signing.pool_status(conn)
         if period is None:
-            return {"period": None}
+            return {"period": None, "pool": pool}
         rnd = conn.execute(
             text("select id::text as id, round_number, status, offers_count "
                  "from fa_rounds where period_id = cast(:p as uuid) "
@@ -724,6 +727,7 @@ def free_agency_state(engine: Engine, *,
         "auctions": out,
         "signings": [dict(s) for s in signings],
         "turn_limit_hours": turn_limit_hours,
+        "pool": pool,
     }
 
 

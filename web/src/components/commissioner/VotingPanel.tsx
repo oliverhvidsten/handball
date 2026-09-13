@@ -142,7 +142,7 @@ export default function VotingPanel({ season, onToast }: VotingPanelProps) {
 
           {allStarStatus === "closed" && (
             <Alert tone="info" style={{ marginBottom: 10 }}>
-              The polls open on their own at the break, after the first half is played.
+              Voting opens automatically once period 3 of 5 has been simulated. Nothing to do until then.
             </Alert>
           )}
           {state.all_star_game && (
@@ -165,7 +165,7 @@ export default function VotingPanel({ season, onToast }: VotingPanelProps) {
             </Button>
           </div>
           <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", marginBottom: 0 }}>
-            Required before period {"4"}: the break falls before the second half.
+            Period 4 cannot be run until this game has been played.
           </p>
         </div>
       </div>

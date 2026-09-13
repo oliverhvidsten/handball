@@ -546,6 +546,18 @@ def _expire_all_contracts(years: int = -6, term: int = 3, value: int = 8) -> Non
                   {"y": years, "t": term, "v": value})
 
 
+def test_contracts_audit_counts_expired_counters_apart_from_normal_expiries(client, two_teams):
+    """`expired` is the repair signal; `expiring_next_rollover` is a league fact. A
+    roster on real 1-year deals expires next rollover but has nothing to repair."""
+    _expire_all_contracts(years=1, term=1, value=5)         # last year of a real deal
+    _as_manager("", role="commissioner")
+    body = client.get("/contracts/audit").json()
+    assert body["expired"] == 0 and body["expiring_next_rollover"] == body["rostered"]
+    _expire_all_contracts(years=0, term=1, value=5)         # counters run out
+    body = client.get("/contracts/audit").json()
+    assert body["expired"] == body["rostered"]
+
+
 def test_contracts_audit_reports_what_the_rollover_would_do(client, two_teams):
     _expire_all_contracts()
     _as_manager("", role="commissioner")

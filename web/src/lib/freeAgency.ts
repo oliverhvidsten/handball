@@ -86,6 +86,10 @@ export interface FASigning {
 }
 export interface FAState {
   period: { id: string; season: number; status: string } | null;
+  // Whether the pool takes minimum ($0) signings right now. Shut while the market is
+  // open, and in the offseason until this season's market has closed -- expired
+  // players are offered real contracts there before anyone can pick them up for free.
+  pool?: { open: boolean; phase: "open" | "market_open" | "awaiting_market"; reason: string | null };
   round?: { id: string; round_number: number; status: string; offers_count: number | null } | null;
   auctions?: FAAuction[];
   signings?: FASigning[];
