@@ -53,6 +53,17 @@ def is_local_db(url: str | None = None) -> bool:
 
 
 def get_engine(url: str | None = None, **kwargs) -> Engine:
+    # Supabase's session-mode pooler admits 15 clients for the whole project, and
+    # SQLAlchemy's default pool (5 + 10 overflow) would happily hold all of them idle
+    # in ONE process -- a local API next to the Render one then locks the league out
+    # with "max clients reached". Cap every engine at 5 so two API processes plus a
+    # script still fit, drop idle connections after ten minutes, and ping before
+    # reuse so a connection the pooler closed is replaced rather than erroring.
+    # Callers may still override any of these.
+    kwargs.setdefault("pool_size", 3)
+    kwargs.setdefault("max_overflow", 2)
+    kwargs.setdefault("pool_recycle", 600)
+    kwargs.setdefault("pool_pre_ping", True)
     engine = create_engine(url or db_url(), future=True, **kwargs)
 
     # Force full-precision float text output. The Supabase pooler runs with
