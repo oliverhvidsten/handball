@@ -81,7 +81,7 @@ export default function Playoffs() {
           message={
             bracket.regular_season_complete
               ? "The regular season is over — the commissioner seeds the bracket from the final standings."
-              : "Eight teams per conference — the four division winners plus the best four remaining — meet in best-of-seven rounds. The bracket is seeded once the regular season finishes."
+              : undefined
           }
         />
       </section>

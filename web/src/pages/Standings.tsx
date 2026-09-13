@@ -87,8 +87,7 @@ export default function Standings() {
     <section>
       <h2 style={{ marginBottom: 4 }}>Standings</h2>
       <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        3 points for a win, 1 for a tie. Ties broken by head-to-head, then goal difference.
-        ★ leads its division and is guaranteed a top-four seed.
+        ★ Division Leader
       </p>
       {err && <Alert tone="error">{err}</Alert>}
 

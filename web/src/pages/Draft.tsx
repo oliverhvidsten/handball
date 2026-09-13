@@ -183,9 +183,6 @@ export default function Draft() {
         <h2 style={{ marginBottom: 16 }}>Draft</h2>
         <EmptyState
           title="No draft yet"
-          message="A draft is created by the season rollover: next year's order is seeded from
-                   the final standings and the bracket, and the first sixteen picks go to the
-                   lottery. It appears here once that has happened."
         />
       </section>
     );

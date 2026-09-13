@@ -126,9 +126,7 @@ export default function Settings() {
   return (
     <section>
       <h2 style={{ marginBottom: 4 }}>Team settings</h2>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        {activeTeam.name} · the city is fixed; the name after it, the abbreviation and the logo are yours.
-      </p>
+      <p style={{ color: "var(--muted)", marginTop: 0 }}>{activeTeam.name}</p>
 
       {!owned && (
         <Alert tone="warning" style={{ marginBottom: 14 }}>You don't own this team, so nothing here can be saved.</Alert>
@@ -175,11 +173,7 @@ export default function Settings() {
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAbbr(e.target.value.toUpperCase())}
           />
         </div>
-        <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", margin: "10px 0 12px" }}>
-          The name follows the city: “{activeTeam.name} {nickname.trim() || "…"}”. The abbreviation is 2 to 4 letters or
-          digits and must be unique in the league; leave it blank to keep the derived one.
-        </p>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <Button variant="primary" disabled={!owned || !dirty || busy != null} onClick={() => void save()}>
             {busy === "save" ? "Saving…" : "Save"}
           </Button>
@@ -194,8 +188,7 @@ export default function Settings() {
       <div style={card}>
         <h3 style={{ margin: "0 0 6px" }}>Logo</h3>
         <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", margin: "0 0 12px" }}>
-          PNG, JPEG, WebP or GIF up to 2 MB. It is resized to fit 256×256, so a square image with a plain background
-          looks best in the small marks.
+          PNG, JPEG, WebP or GIF up to 2 MB. Will be resized to 256x256.
         </p>
         <input
           ref={fileRef}
