@@ -81,7 +81,7 @@ export default function Schedule() {
 
       {tab === "upcoming" ? (
         upcoming.length === 0 ? (
-          <EmptyState title="No upcoming games" message="Generate a schedule from the Commissioner page, or the season has finished playing out." />
+          <EmptyState title="No upcoming games" />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {upcoming.map((f) => {
@@ -108,7 +108,7 @@ export default function Schedule() {
           </div>
         )
       ) : games.length === 0 ? (
-        <EmptyState title="No games played yet" message="Results appear once the season has been simulated." />
+        <EmptyState title="No games played yet" />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {games.map((g) => {
