@@ -45,15 +45,6 @@ interface Arrangement {
 }
 interface CoachRow { role: string; coach_legacy_id: string; coach_name: string; }
 interface PickRow { id: string; season: number; round: number; originalTeam: string; }
-// The cap-relevant slice of handball/signing_service.py:team_cap_report.
-interface CapT {
-  payroll: number; cap_room: number; over_cap: boolean;
-  over_first_threshold: boolean; over_second_threshold: boolean;
-  mid_level_exception: number; hard_cap_room: number;
-  roster_size: number; max_roster: number;
-  projected_next_payroll: number; extension_window_open: boolean;
-  limits: { salary_cap: number; hard_cap: number };
-}
 
 function emptyArr(): Arrangement {
   const byPos = () => Object.fromEntries(POSITIONS.map((p) => [p, [] as string[]]));
@@ -136,35 +127,6 @@ function TeamStatBox({ kind, label, value }: { kind: "offense" | "defense"; labe
       <span style={{ fontSize: "var(--text-2xl)", fontWeight: "var(--weight-black)", fontVariantNumeric: "tabular-nums" }}>
         {value.toFixed(1)}
       </span>
-    </div>
-  );
-}
-
-// One-line salary-cap standing for the team page. Tone tracks how deep into the
-// luxury-tax tiers the payroll sits; the numbers themselves are computed server-side
-// (handball/salary_cap.py) so this never re-implements a cap rule.
-function CapStrip({ cap }: { cap: CapT }) {
-  const money = (m: number) => `$${m}M`;
-  const tone = cap.over_second_threshold
-    ? "var(--red-600)"
-    : cap.over_first_threshold
-      ? "var(--amber-600)"
-      : "var(--muted)";
-  const items = [
-    `Payroll ${money(cap.payroll)}`,
-    cap.over_cap
-      ? `${money(cap.payroll - cap.limits.salary_cap)} over the ${money(cap.limits.salary_cap)} cap`
-      : `${money(cap.cap_room)} cap room`,
-    `MLE ${money(cap.mid_level_exception)}`,
-    `${money(cap.hard_cap_room)} to the hard cap`,
-    `${money(cap.projected_next_payroll)} committed next season`,
-    `Roster ${cap.roster_size}/${cap.max_roster}`,
-  ];
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14, fontSize: "var(--text-sm)", fontFamily: "var(--font-mono)", color: tone }}>
-      {items.map((t, i) => (
-        <span key={i}>{t}</span>
-      ))}
     </div>
   );
 }
@@ -288,7 +250,6 @@ export default function Roster() {
   const nav = useNavigate();
 
   const [players, setPlayers] = useState<PP[]>([]);
-  const [cap, setCap] = useState<CapT | null>(null);
   const [coaches, setCoaches] = useState<CoachRow[]>([]);
   const [picks, setPicks] = useState<PickRow[]>([]);
   const [activeSeason, setActiveSeason] = useState<number | null>(null);
@@ -341,17 +302,6 @@ export default function Roster() {
   }, [slug]);
 
   useEffect(() => { void load(); }, [load]);
-
-  // Salary-cap standing comes from the API, not the client: the rules (cap room,
-  // luxury thresholds, MLE, hard-cap headroom) live in handball/salary_cap.py and are
-  // shaped for display by signing_service.team_cap_report. Non-fatal if it fails --
-  // the roster editor doesn't depend on it.
-  useEffect(() => {
-    if (!slug) { setCap(null); return; }
-    apiFetch<CapT>(`/teams/${slug}/cap`, { method: "GET" })
-      .then(setCap)
-      .catch(() => setCap(null));
-  }, [slug]);
 
   // Active season fetched once (independent of the selected team) so the
   // draft-pick board knows which 10 years to render.
@@ -525,7 +475,6 @@ export default function Roster() {
           </div>
         )}
       </div>
-      {cap && <CapStrip cap={cap} />}
       {err && <Alert tone="error" style={{ marginBottom: 14 }}>{err}</Alert>}
       {problems.length > 0 && <Alert tone="error" title="Invalid lineup" items={problems} style={{ marginBottom: 14 }} />}
 

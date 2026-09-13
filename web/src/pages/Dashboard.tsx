@@ -1,10 +1,21 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { apiFetch } from "../lib/api";
 import { useAuth } from "../auth";
-import { StatCard, Alert, EmptyState, Button } from "../ds";
+import { StatCard, CapMeter, Alert, EmptyState, Button } from "../ds";
 
 interface Issue { text: string; to: string; }
+
+// handball/signing_service.team_cap_report, drawn by CapMeter. Every rule (cap room,
+// tax tiers, MLE, hard-cap headroom) is decided server-side.
+interface CapReport {
+  payroll: number; cap_room: number; over_cap: boolean;
+  over_first_threshold: boolean; over_second_threshold: boolean;
+  mid_level_exception: number; hard_cap_room: number; projected_next_payroll: number;
+  roster_size: number; max_roster: number; roster_spots: number;
+  limits: { salary_cap: number; first_luxury_threshold: number; second_luxury_threshold: number; hard_cap: number };
+}
 
 export default function Dashboard() {
   const { activeTeam } = useAuth();
@@ -12,6 +23,14 @@ export default function Dashboard() {
   const [season, setSeason] = useState<number | null>(null);
   const [games, setGames] = useState(0);
   const [issues, setIssues] = useState<Issue[]>([]);
+  const [cap, setCap] = useState<CapReport | null>(null);
+
+  useEffect(() => {
+    if (!activeTeam) { setCap(null); return; }
+    apiFetch<CapReport>(`/teams/${activeTeam.slug}/cap`, { method: "GET" })
+      .then(setCap)
+      .catch(() => setCap(null));
+  }, [activeTeam]);
 
   useEffect(() => {
     supabase.from("games").select("season", { count: "exact" }).order("season", { ascending: false }).limit(1)
@@ -61,6 +80,20 @@ export default function Dashboard() {
           <StatCard label="Record" value={`${activeTeam.wins}-${activeTeam.losses}-${activeTeam.ties}`} accent="var(--amber-600)" />
         )}
       </div>
+
+      {activeTeam && cap && (
+        <div style={{ marginBottom: 28 }}>
+          <CapMeter
+            cap={cap}
+            actions={
+              <>
+                <Button size="sm" onClick={() => nav("/free-agents")}>Free agents</Button>
+                <Button size="sm" onClick={() => nav("/trades")}>Trades</Button>
+              </>
+            }
+          />
+        </div>
+      )}
 
       <h3 style={{ marginBottom: 10 }}>Items to resolve {activeTeam ? `· ${activeTeam.name}` : ""}</h3>
       {issues.length === 0 ? (
