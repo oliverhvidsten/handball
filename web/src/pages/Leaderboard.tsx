@@ -49,11 +49,11 @@ export default function Leaderboard() {
 
   return (
     <section>
-      <h2 style={{ marginBottom: 16 }}>Scoring leaders</h2>
+      <h2 style={{ marginBottom: 16 }}>Leaders</h2>
       <Tabs items={CATEGORIES} value={cat} onChange={setCat} style={{ marginBottom: 16 }} />
       {err && <Alert tone="error">{err}</Alert>}
       {rows.length === 0 && !err ? (
-        <EmptyState title="No games played yet" message="Leaders appear once the season's games have been simulated." />
+        <EmptyState title="No games played yet" />
       ) : (
         <div style={{ background: "var(--surface-card)", border: "1px solid var(--line)", borderRadius: "var(--radius-lg)", overflow: "hidden" }}>
           <DataTable
