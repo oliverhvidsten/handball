@@ -126,9 +126,7 @@ export default function Settings() {
   return (
     <section>
       <h2 style={{ marginBottom: 4 }}>Team settings</h2>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        {activeTeam.name} · the city is fixed; the name after it, the abbreviation and the logo are yours.
-      </p>
+      <p style={{ color: "var(--muted)", marginTop: 0 }}>{activeTeam.name}</p>
 
       {!owned && (
         <Alert tone="warning" style={{ marginBottom: 14 }}>You don't own this team, so nothing here can be saved.</Alert>
