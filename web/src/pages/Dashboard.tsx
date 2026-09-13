@@ -108,15 +108,7 @@ export default function Dashboard() {
 
       {activeTeam && cap && (
         <div style={{ marginBottom: 28 }}>
-          <CapMeter
-            cap={cap}
-            actions={
-              <>
-                <Button size="sm" onClick={() => nav("/free-agents")}>Free agents</Button>
-                <Button size="sm" onClick={() => nav("/trades")}>Trades</Button>
-              </>
-            }
-          />
+          <CapMeter cap={cap} />
         </div>
       )}
 
