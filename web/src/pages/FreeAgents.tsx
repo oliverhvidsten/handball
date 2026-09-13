@@ -538,11 +538,7 @@ export default function FreeAgents() {
       {rows.length === 0 ? (
         <EmptyState
           title="No free agents"
-          message={
-            pool.length === 0
-              ? "The pool fills up at the offseason rollover, when expiring contracts run out."
-              : "Try clearing the search or filters."
-          }
+          message={pool.length === 0 ? undefined : "Try clearing the search or filters."}
         />
       ) : (
         <>
