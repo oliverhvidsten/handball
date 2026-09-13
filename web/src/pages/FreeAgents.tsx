@@ -138,6 +138,10 @@ export default function FreeAgents() {
 
   const marketOpen = !!fa?.period;
   const offersOpen = fa?.round?.status === "offers";
+  // Minimum signings are shut between the rollover and the close of this season's
+  // market (the server refuses them too). During the season the pool is always open.
+  const poolOpen = fa?.pool?.open ?? true;
+  const poolClosedReason = fa?.pool?.reason ?? null;
   // Page-local acting team -- never written back to the TeamSwitcher, because jumping
   // to a bid should not silently re-scope Roster and Dashboard.
   const acting: FATeam | null =
@@ -317,6 +321,12 @@ export default function FreeAgents() {
         </Alert>
       )}
 
+      {!marketOpen && !poolOpen && (
+        <Alert tone="info" title="Minimum signings open after free agency" style={{ marginBottom: 14 }}>
+          {poolClosedReason}
+        </Alert>
+      )}
+
       {marketOpen && fa!.teams.length > 1 && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
           {fa!.teams.map((t) => (
@@ -486,7 +496,7 @@ export default function FreeAgents() {
         );
       })()}
 
-      {selected && !marketOpen && activeTeam && cap && (
+      {selected && !marketOpen && poolOpen && activeTeam && cap && (
         <div style={{ background: "var(--surface-card)", border: "1px solid var(--line)", borderRadius: "var(--radius-lg)", padding: 16, marginBottom: 18 }}>
           <h3 style={{ margin: "0 0 4px" }}>Sign {selected.name}</h3>
           {/* Nothing to negotiate: every free-agent deal is the same fixed
@@ -537,7 +547,7 @@ export default function FreeAgents() {
       ) : (
         <>
           <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)", margin: "0 0 8px" }}>
-            {rows.length} available{activeTeam ? " — pick one to make an offer" : ""}
+            {rows.length} available{activeTeam && (marketOpen || poolOpen) ? (marketOpen ? " — pick one to make an offer" : " — pick one to sign at the minimum") : ""}
           </p>
           <div style={{ background: "var(--surface-card)", border: "1px solid var(--line)", borderRadius: "var(--radius-lg)", overflow: "hidden" }}>
             <DataTable
