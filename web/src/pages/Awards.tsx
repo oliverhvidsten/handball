@@ -63,10 +63,6 @@ export default function Awards() {
           </div>
         )}
       </div>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        Season {data.season}. Voted by the managers, 10-7-5-3-1 by placement.
-      </p>
-
       {err && <Alert tone="error" style={{ marginBottom: 12 }}>{err}</Alert>}
 
       {nothing ? (
