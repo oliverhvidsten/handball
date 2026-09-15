@@ -37,6 +37,9 @@ interface PP {
   // badge shows on any team's roster, not just your own.
   ext_term: number | null;
   ext_value: number | null;
+  // The current deal, as the roster card shows it: "<years left>/$<per-year salary>".
+  years_remaining: number | null;
+  contract_value: number | null;
 }
 interface Arrangement {
   starters: Record<string, string[]>;
@@ -45,6 +48,14 @@ interface Arrangement {
 }
 interface CoachRow { role: string; coach_legacy_id: string; coach_name: string; }
 interface PickRow { id: string; season: number; round: number; originalTeam: string; }
+
+// "3/$5": three years left at $5M a season. Mirrors domain.Player's own summary
+// string, but counts years REMAINING rather than the original term, since what a
+// roster reader wants to know is how long the player is still under contract.
+function contractTag(p: PP): string | null {
+  if (p.years_remaining == null || p.contract_value == null) return null;
+  return `${p.years_remaining}/$${p.contract_value}`;
+}
 
 function emptyArr(): Arrangement {
   const byPos = () => Object.fromEntries(POSITIONS.map((p) => [p, [] as string[]]));
@@ -324,7 +335,10 @@ export default function Roster() {
   const teamStats = useMemo(() => computeTeamStats(arr, byId), [arr, byId]);
   const dsPlayer = (id: string) => {
     const p = byId.get(id);
-    return p && { id: p.legacy_id, name: p.name, position: p.position, offense: p.offense, defense: p.defense, goalie: p.goalie_skill, injured: p.is_injured };
+    return p && {
+      id: p.legacy_id, name: p.name, position: p.position, offense: p.offense, defense: p.defense,
+      goalie: p.goalie_skill, injured: p.is_injured, contract: contractTag(p),
+    };
   };
   const cols = (group: "starters" | "bench") =>
     Object.fromEntries(POSITIONS.map((pos) => [pos, arr[group][pos].map(dsPlayer).filter(Boolean)]));

@@ -8,8 +8,9 @@ const POS_TONE = { Forward: "neutral", Midfielder: "neutral", Defense: "neutral"
 const POSITIONS = ["Forward", "Midfielder", "Defense", "Goalie"];
 
 /**
- * NHA PlayerRow — one roster player: name, position tag, O/D/G stat chips,
- * an optional INJ flag, and (when editable) a ⋯ menu with move actions.
+ * NHA PlayerRow — one roster player: name, an optional contract tag ("3/$5",
+ * plain weight so the name still leads), position tag, O/D/G stat chips, an
+ * optional INJ flag, and (when editable) a ⋯ menu with move actions.
  */
 export function PlayerRow({
   player,
@@ -81,6 +82,11 @@ export function PlayerRow({
           }}
         >
           {p.name}
+          {p.contract && (
+            <span style={{ marginLeft: 6, fontWeight: "var(--weight-regular)", color: "var(--muted)" }}>
+              {p.contract}
+            </span>
+          )}
           {p.injured && <Tag tone="red" solid size="sm" style={{ marginLeft: 6, verticalAlign: "middle" }}>INJ</Tag>}
         </span>
         {editable && (
